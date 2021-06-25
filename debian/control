@@ -1,0 +1,12 @@
+Source: ros-foxy-massrobotics-amr-sender
+Section: misc
+Priority: optional
+Maintainer: leandro <support@inorbit.ai>
+Build-Depends: debhelper (>= 9.0.0), python3-jsonschema, python3-mock, python3-pep8, python3-pytest, ros-foxy-ament-copyright, ros-foxy-ament-flake8, ros-foxy-ament-pep257, ros-foxy-ros-workspace, python3-all, python3-setuptools
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-foxy-massrobotics-amr-sender
+Architecture: any
+Depends: ${python3:Depends}, ${misc:Depends}, python3-websockets, ros-foxy-rclpy, ros-foxy-tf2, ros-foxy-tf2-bullet, ros-foxy-tf2-eigen, ros-foxy-tf2-eigen-kdl, ros-foxy-tf2-geometry-msgs, ros-foxy-tf2-kdl, ros-foxy-tf2-msgs, ros-foxy-tf2-py, ros-foxy-tf2-ros, ros-foxy-tf2-sensor-msgs, ros-foxy-tf2-tools, ros-foxy-ros-workspace
+Description: MassRobotics AMR Interop Sender
