@@ -1,47 +1,43 @@
-# ROS AMR interoperability packages
+# massrobotics_amr_sender
 
-[![black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+Configuration-based ROS package for sending MassRobotics [AMR Interop Standard messages](https://github.com/MassRobotics-AMR/AMR_Interop_Standard) to compliant receivers.
 
-This repository hosts a collection of ROS packages to ease
-the integration of ROS based robots with different interoperability
-standards, with a focus on AMRs (Autonomous Mobile Robots).
+# Package installation
 
-## Packages
+## From binary packages
 
-The following packages are included in this repository:
+Coming soon.
 
-### Mass Robotics AMR Interop Sender for ROS1
+## Building from source
 
-The [massrobotics_amr_sender](https://github.com/inorbit-ai/ros_amr_interop/tree/noetic-devel/massrobotics_amr_sender#readme)
-package provides a ROS1 node written in Python that takes input from a
-ROS1 system and publishes it to a [Mass Robotics Interop compliant
-Receiver](https://github.com/MassRobotics-AMR/AMR_Interop_Standard/tree/main/MassRobotics-AMR-Receiver).
+Make sure `ros` is installed properly. Then clone this repository inside your `src` folder on your local workspace and build the package executing the following commands:
 
-Mapping of different data elements from the ROS1 system into Mass
-Robotics Interop messages can be customized through a YAML configuration
-file.
+```bash
+# Create a ROS workspace and go into it - if you don't have one already
+mkdir -p ~/ros_ws/src && cd ros_ws/
+# Clone the repo inside the workspace
+git clone --branch noetic-devel https://github.com/inorbit-ai/ros_amr_interop.git ./src
+# Install dependencies
+rosdep update && rosdep install --ignore-src --from-paths src/
+# Run the build
+catkin config --install
+catkin build
+```
+# Node configuration
 
-## Related Initiatives
+A configuration file must be provided to define how ROS1 messages are mapped to different AMR Interop Standard messages. A [sample_config.yaml](https://github.com/inorbit-ai/ros_amr_interop/blob/noetic-devel/massrobotics_amr_sender_py/sample_config.yaml) is provided for reference.
 
-The topic of AMR interoperability is in a fluid state of evolution. For this reason, it is worth it to keep track of other standards, initiatives, libraries and efforts related to this topic.
+# Running the sender node
 
-The following is an incomplete and growing list of such related topics:
+The node takes the MassRobotics AMR config file path as parameter. If not provided, it is assumed the file is on the current directory.
 
- * [Open-RMF](https://osrf.github.io/ros2multirobotbook/) (formerly RMF Core) is an
- open source framework based on ROS 2 to enable the interoperability of heterogeneous
- fleets of any type of robotics systems.
- * [Mass Robotics AMR Interoperability Standard](https://github.com/MassRobotics-AMR/AMR_Interop_Standard) aims to help organizations deploy AMRs from multiple vendors and have them coexist effectively.
- * [VDA 5050](https://www.vda.de/en/services/Publications/vda-5050-v-1.1.-agv-communication-interface.html)
- AGV Communications Interface describes an interface for communication between driverless
- transport vehicles (AGV) and a master control system over MQTT using standardized
- JSON messages.
- * [OPC Unified Architecture](https://opcfoundation.org/about/opc-technologies/opc-ua/)
-   (OPC UA) is a machine to machine communication protocol for industrial
- automation developed by the OPC Foundation
-   * [ros_opcua_communication](http://wiki.ros.org/ros_opcua_communication) ROS bindings for different open-source OPC-UA implementations
+```bash
+# Remember to source the ROS environment from the binary installation or your workspace overlay
+source devel/setup.bash
+# Launch the node pointing to your configuration file
+roslaunch massrobotics_amr_sender massrobotics_amr_sender.launch config_file:=/path/to/config.yaml
+```
 
-We expect to keep curating the set of relevant topics with the contribution of the community.
+# Tests
 
-## Development
-
-Install [pre-commit](https://pre-commit.com/) in your computer and then set it up by running `pre-commit install` at the root of the cloned project.
+TODO.
