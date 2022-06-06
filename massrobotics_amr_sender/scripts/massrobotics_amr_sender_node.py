@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2021 InOrbit, Inc.
+# Copyright 2022 InOrbit, Inc.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -28,19 +28,15 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-
-import rclpy
-from . import MassRoboticsAMRInteropNode
+from massrobotics_amr_sender import MassRoboticsAMRInteropNode
 
 # Interesting example https://github.com/clalancette/mtexec_example
 
 
 def main(args=None):
-    rclpy.init(args=args)
     node = MassRoboticsAMRInteropNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
+    node.start()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
