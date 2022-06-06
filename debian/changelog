@@ -1,0 +1,25 @@
+ros-noetic-massrobotics-amr-sender (1.0.1-1focal) focal; urgency=high
+
+  * First version of the package in ROS Noetic (#25 <https://github.com/inorbit-ai/ros_amr_interop/issues/25>)
+    * Update schema to latest version
+    * Fix issue with click dependency
+    * Apply formatting with black
+    * Translate the package to ROS 1 Noetic
+    * Remove references to ROS2
+  * Contributors: Florencia Grosso
+
+ -- InOrbit <support@inorbit.ai>  Mon, 06 Jun 2022 03:00:00 -0000
+
+ros-noetic-massrobotics-amr-sender (1.0.0-1focal) focal; urgency=high
+
+
+
+ -- InOrbit <support@inorbit.ai>  Fri, 25 Jun 2021 19:56:00 -0000
+
+ros-noetic-massrobotics-amr-sender (0.0.2-1focal) focal; urgency=high
+
+
+
+ -- InOrbit <support@inorbit.ai>  Fri, 25 Jun 2021 17:45:00 -0000
+
+

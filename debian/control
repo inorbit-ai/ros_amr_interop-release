@@ -1,0 +1,12 @@
+Source: ros-noetic-massrobotics-amr-sender
+Section: misc
+Priority: optional
+Maintainer: InOrbit <support@inorbit.ai>
+Build-Depends: debhelper (>= 9.0.0), python3-jsonschema <!nocheck>, python3-mock <!nocheck>, python3-pep8 <!nocheck>, python3-pytest <!nocheck>, python3-pytest-mock <!nocheck>, python3-yaml <!nocheck>, ros-noetic-catkin, ros-noetic-geometry-msgs, ros-noetic-nav-msgs, ros-noetic-rospy, ros-noetic-sensor-msgs, ros-noetic-std-msgs
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-noetic-massrobotics-amr-sender
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3-pykdl, python3-websockets, ros-noetic-geometry-msgs, ros-noetic-nav-msgs, ros-noetic-rospy, ros-noetic-sensor-msgs, ros-noetic-std-msgs, ros-noetic-tf2-kdl
+Description: MassRobotics AMR Interop Sender
