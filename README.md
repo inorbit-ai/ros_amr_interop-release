@@ -1,7 +1,5 @@
 # ROS AMR interoperability packages
 
-[![black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-
 This repository hosts a collection of ROS packages to ease
 the integration of ROS based robots with different interoperability
 standards, with a focus on AMRs (Autonomous Mobile Robots).
@@ -10,14 +8,21 @@ standards, with a focus on AMRs (Autonomous Mobile Robots).
 
 The following packages are included in this repository:
 
-### Mass Robotics AMR Interop Sender for ROS1
+### VDA5050 connector for ROS2
 
-The [massrobotics_amr_sender](https://github.com/inorbit-ai/ros_amr_interop/tree/noetic-devel/massrobotics_amr_sender#readme)
-package provides a ROS1 node written in Python that takes input from a
-ROS1 system and publishes it to a [Mass Robotics Interop compliant
+The [vda5050_connector](https://github.com/inorbit-ai/ros_amr_interop/tree/galactic-devel/vda5050_connector#readme)
+package provides a set of ROS2 nodes for connecting a ROS2-based robot to a [VDA5050 Master Control](https://github.com/VDA5050/VDA5050/blob/main/VDA5050_EN.md#-5-process-and-content-of-communication).
+
+If you want to develop a VDA5050 adapter for your robots, please check out our [VDA5050 Adapter Examples repository](https://github.com/inorbit-ai/vda5050_adapter_examples) to get started.
+
+### Mass Robotics AMR Interop Sender for ROS2
+
+The [massrobotics_amr_sender_py](https://github.com/inorbit-ai/ros_amr_interop/tree/foxy-devel/massrobotics_amr_sender_py#readme)
+package provides a ROS2 node written in Python that takes input from a
+ROS2 system and publishes it to a [Mass Robotics Interop compliant
 Receiver](https://github.com/MassRobotics-AMR/AMR_Interop_Standard/tree/main/MassRobotics-AMR-Receiver).
 
-Mapping of different data elements from the ROS1 system into Mass
+Mapping of different data elements from the ROS2 system into Mass
 Robotics Interop messages can be customized through a YAML configuration
 file.
 
@@ -31,7 +36,7 @@ The following is an incomplete and growing list of such related topics:
  open source framework based on ROS 2 to enable the interoperability of heterogeneous
  fleets of any type of robotics systems.
  * [Mass Robotics AMR Interoperability Standard](https://github.com/MassRobotics-AMR/AMR_Interop_Standard) aims to help organizations deploy AMRs from multiple vendors and have them coexist effectively.
- * [VDA 5050](https://www.vda.de/en/services/Publications/vda-5050-v-1.1.-agv-communication-interface.html)
+ * [VDA 5050](https://github.com/VDA5050/VDA5050)
  AGV Communications Interface describes an interface for communication between driverless
  transport vehicles (AGV) and a master control system over MQTT using standardized
  JSON messages.
