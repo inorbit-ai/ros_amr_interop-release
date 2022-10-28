@@ -1,3 +1,30 @@
+## ros_amr_interop (galactic) - 1.1.1-1
+
+The packages in the `ros_amr_interop` repository were released into the `galactic` distro by running `/usr/bin/bloom-release --rosdistro galactic ros_amr_interop` on `Fri, 28 Oct 2022 20:53:09 -0000`
+
+These packages were released:
+- `massrobotics_amr_sender`
+- `vda5050_connector`
+- `vda5050_msgs`
+- `vda5050_serializer`
+
+Version of package(s) in repository `ros_amr_interop`:
+
+- upstream repository: https://github.com/inorbit-ai/ros_amr_interop.git
+- release repository: https://github.com/inorbit-ai/ros_amr_interop-release.git
+- rosdistro version: `1.1.0-1`
+- old version: `1.1.0-1`
+- new version: `1.1.1-1`
+
+Versions of tools used:
+
+- bloom version: `0.11.2`
+- catkin_pkg version: `0.5.2`
+- rosdep version: `0.22.1`
+- rosdistro version: `0.9.0`
+- vcstools version: `0.1.42`
+
+
 ## ros_amr_interop (galactic) - 1.1.0-1
 
 The packages in the `ros_amr_interop` repository were released into the `galactic` distro by running `/usr/bin/bloom-release --new-track --rosdistro galactic --track galactic ros_amr_interop --edit` on `Tue, 25 Oct 2022 20:10:00 -0000`
