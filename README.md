@@ -1,68 +1,52 @@
-# VDA5050 Connector
+# ROS AMR interoperability packages
 
-A ROS2 package which implements a connector for [VDA5050](https://github.com/VDA5050/VDA5050/blob/main/VDA5050_EN.md), a standardized interface for communication between fleets of AGVs/AMRs and a central Master Control.
+This repository hosts a collection of ROS packages to ease
+the integration of ROS based robots with different interoperability
+standards, with a focus on AMRs (Autonomous Mobile Robots).
 
-## Overview
+## Packages
 
-The package names itself *Connector*, since it can be thought as a bridge between a VDA5050 Master Control (MC) and the ROS2 robot API.
+The following packages are included in this repository:
 
-![VDA5050 General diagram](./docs/source/_static/vda5050_diagram.png)
+### VDA5050 connector for ROS2
 
-The connector is composed of three main parts (ROS2 nodes):
+The [vda5050_connector](https://github.com/inorbit-ai/ros_amr_interop/tree/galactic-devel/vda5050_connector#readme)
+package provides a set of ROS2 nodes for connecting a ROS2-based robot to a [VDA5050 Master Control](https://github.com/VDA5050/VDA5050/blob/main/VDA5050_EN.md#-5-process-and-content-of-communication).
 
-- **MQTT_bridge**: Communicates the VDA5050 <> ROS2 topics, translating [VDA5050 messages](https://github.com/VDA5050/VDA5050/tree/main/json_schemas) into ROS2 [vda5050_msgs](https://github.com/ipa320/vda5050_msgs/tree/ros2-vda5050-v2) and vice versa.
-- **Controller**: Processes the VDA5050 robot execution as per standard specification. It validates, executes, or rejects orders and instant actions, as well as assembles feedback information to the MC.
-- **Adapter**: Provides the interaction between the controller and the Robot API. The adapter is the one who knows how to send a navigation goal request, execute an action or retrieve specific information robot such as battery or odometry.
+If you want to develop a VDA5050 adapter for your robots, please check out our [VDA5050 Adapter Examples repository](https://github.com/inorbit-ai/vda5050_adapter_examples) to get started.
 
-![Connector diagram](./docs/source/_static/connector_diagram.png)
+### Mass Robotics AMR Interop Sender for ROS2
 
-The way the adapter knows how to execute the different operations requested by the controller is using ROS2 plugins (components). The current project provides three plugin template interfaces, called handlers, which cover the main communication paths:
+The [massrobotics_amr_sender_py](https://github.com/inorbit-ai/ros_amr_interop/tree/foxy-devel/massrobotics_amr_sender_py#readme)
+package provides a ROS2 node written in Python that takes input from a
+ROS2 system and publishes it to a [Mass Robotics Interop compliant
+Receiver](https://github.com/MassRobotics-AMR/AMR_Interop_Standard/tree/main/MassRobotics-AMR-Receiver).
 
-- **State handler**: Designed for updating robot specific information on the VDA5050 [order_state](https://github.com/ipa320/vda5050_msgs/blob/ros2-vda5050-v2/vda5050_msgs/msg/OrderState.msg).
-- **NavTONode handler**: Designed for sending goals to the robot navigation stack.
-- **VDA Action handler**: Designed for handling requests to execute specific actions (localize, lift a load, etc).
+Mapping of different data elements from the ROS2 system into Mass
+Robotics Interop messages can be customized through a YAML configuration
+file.
 
-![Connector diagram](./docs/source/_static/connector_package.png)
+## Related Initiatives
 
-## How to use it
+The topic of AMR interoperability is in a fluid state of evolution. For this reason, it is worth it to keep track of other standards, initiatives, libraries and efforts related to this topic.
 
-The package is also a library package; it exports the headers and binary files to create and assemble a specific adapter. To create your own adapter package, add this package as a dependency and define the different plugin handlers for your robot. You can also customize the adapter core functionalities if desired.
+The following is an incomplete and growing list of such related topics:
 
-To do this this, you can check the [vda5050_examples](https://github.com/inorbit-ai/vda5050_adapter_examples) repository, where you will find examples of adapter packages, for python and C++, as well as docker scripts to quickly start testing them.
+ * [Open-RMF](https://osrf.github.io/ros2multirobotbook/) (formerly RMF Core) is an
+ open source framework based on ROS 2 to enable the interoperability of heterogeneous
+ fleets of any type of robotics systems.
+ * [Mass Robotics AMR Interoperability Standard](https://github.com/MassRobotics-AMR/AMR_Interop_Standard) aims to help organizations deploy AMRs from multiple vendors and have them coexist effectively.
+ * [VDA 5050](https://github.com/VDA5050/VDA5050)
+ AGV Communications Interface describes an interface for communication between driverless
+ transport vehicles (AGV) and a master control system over MQTT using standardized
+ JSON messages.
+ * [OPC Unified Architecture](https://opcfoundation.org/about/opc-technologies/opc-ua/)
+   (OPC UA) is a machine to machine communication protocol for industrial
+ automation developed by the OPC Foundation
+   * [ros_opcua_communication](http://wiki.ros.org/ros_opcua_communication) ROS bindings for different open-source OPC-UA implementations
 
-### Dependencies
+We expect to keep curating the set of relevant topics with the contribution of the community.
 
-- ROS2 - ament_cmake: The package is based on ROS2, and uses `ament_cmake`.
-- [vda5050_msgs](https://github.com/ipa320/vda5050_msgs/tree/ros2-vda5050-v2): ROS2 messages for the VDA5050 standard (version 2.0).
-- [pluginlib](http://wiki.ros.org/pluginlib): The adapter uses plugins to load the different handlers.
-- [python3-paho-mqtt](https://pypi.org/project/paho-mqtt/): The `mqtt_bridge` uses the `paho-mqtt` library as the mqtt client.
+## Development
 
-### Compilation
-
-Download `vda5050_msgs` package into your ROS2 workspace
-
-```bash
-cd ~/dev_ws/ &&
-git clone --branch ros2-vda5050-v2 https://github.com/ipa320/vda5050_msgs.git \
-    && mv vda5050_msgs/vda5050_msgs ./src/vda5050_msgs \
-    && mv vda5050_msgs/vda5050_serializer ./src/vda5050_serializer \
-    && rm -rf vda5050_msgs
-```
-
-Then download this package into the ROS2 workspace `src` folder and compile it using `colcon build`.
-
-### Testing
-
-The package provides several lint test (`ament_pep257` and `ament_flake8` for Python, `ament_clang_format` for C++ and `ament_copyright`), as well as specific unit tests to check the correct functionality of the different modules. To run the tests, execute:
-
-```sh
-colcon test --packages-select vda5050_connector && colcon test-result --verbose
-```
-
-## Contributing
-
-Please see the [CONTRIBUTING](CONTRIBUTING.md) document.
-
-## License
-
-[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
+Install [pre-commit](https://pre-commit.com/) in your computer and then set it up by running `pre-commit install` at the root of the cloned project.
