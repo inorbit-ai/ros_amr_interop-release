@@ -1,0 +1,12 @@
+Source: ros-galactic-vda5050-connector
+Section: misc
+Priority: optional
+Maintainer: Leandro Pineda <leandro@inorbit.ai>
+Build-Depends: debhelper (>= 9.0.0), python3-paho-mqtt, python3-pytest <!nocheck>, ros-galactic-ament-cmake, ros-galactic-ament-cmake-clang-format <!nocheck>, ros-galactic-ament-cmake-copyright <!nocheck>, ros-galactic-ament-cmake-cppcheck <!nocheck>, ros-galactic-ament-cmake-cpplint <!nocheck>, ros-galactic-ament-cmake-flake8 <!nocheck>, ros-galactic-ament-cmake-gtest <!nocheck>, ros-galactic-ament-cmake-pep257 <!nocheck>, ros-galactic-ament-cmake-python, ros-galactic-ament-cmake-ros, ros-galactic-ament-cmake-uncrustify <!nocheck>, ros-galactic-ament-copyright <!nocheck>, ros-galactic-ament-flake8 <!nocheck>, ros-galactic-ament-pep257 <!nocheck>, ros-galactic-geometry-msgs, ros-galactic-pluginlib, ros-galactic-rclcpp, ros-galactic-rclcpp-action, ros-galactic-rclpy, ros-galactic-rosidl-default-generators, ros-galactic-rosidl-runtime-py, ros-galactic-tf2, ros-galactic-vda5050-msgs, ros-galactic-ros-workspace, ros-galactic-rosidl-typesupport-fastrtps-c, ros-galactic-rosidl-typesupport-fastrtps-cpp
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-galactic-vda5050-connector
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3-paho-mqtt, ros-galactic-geometry-msgs, ros-galactic-pluginlib, ros-galactic-rclcpp, ros-galactic-rclcpp-action, ros-galactic-rclpy, ros-galactic-rosidl-runtime-py, ros-galactic-tf2, ros-galactic-vda5050-msgs, ros-galactic-ros-workspace
+Description: ROS2 to VDA5050 / VDA5050 to ROS2 connector
