@@ -1,0 +1,13 @@
+Source: ros-galactic-vda5050-serializer
+Section: misc
+Priority: optional
+Maintainer: Jannik Abbenseth <jannik.abbenseth@ipa.fraunhofer.de>
+Build-Depends: debhelper (>= 9.0.0), python3-pytest <!nocheck>, ros-galactic-ament-copyright <!nocheck>, ros-galactic-ament-flake8 <!nocheck>, ros-galactic-ament-pep257 <!nocheck>, ros-galactic-ros-workspace, python3-all, python3-setuptools, dh-python
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-galactic-vda5050-serializer
+Architecture: any
+Depends: ${python3:Depends}, ${misc:Depends}, ros-galactic-ros-workspace
+Description: The serialization/deserialization functions to be loaded into the mqtt_bridge.
+ During (de-)serialization the case of the keys is corrected from snake_case on ROS side to dromedaryCase on MQTT/JSON side
