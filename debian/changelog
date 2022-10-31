@@ -1,0 +1,50 @@
+ros-galactic-massrobotics-amr-sender (1.1.1-2focal) focal; urgency=high
+
+  * Fixed ROS buildfarm job (#29 <https://github.com/inorbit-ai/ros_amr_interop/issues/29>)
+
+ -- InOrbit <support@inorbit.ai>  Fri, 28 Oct 2022 03:00:00 -0000
+
+ros-galactic-massrobotics-amr-sender (1.1.0-2focal) focal; urgency=high
+
+  * Updated schema to match the latest version of the AMR interop standard (May 2022) (#24 <https://github.com/inorbit-ai/ros_amr_interop/issues/24>)
+    
+      * Renamed planarDatum to planarDatumUUID
+      * Removed planarDatum from velocity
+    
+  * Added schema checking for all sent messages (#15 <https://github.com/inorbit-ai/ros_amr_interop/issues/15>)
+  * Added support for errorcodes (#14 <https://github.com/inorbit-ai/ros_amr_interop/issues/14>)
+
+ -- InOrbit <support@inorbit.ai>  Mon, 17 Oct 2022 03:00:00 -0000
+
+ros-galactic-massrobotics-amr-sender (1.0.0-2focal) focal; urgency=high
+
+  * Adding bits for first release (#7 <https://github.com/inorbit-ai/ros_amr_interop/issues/7>)
+
+ -- InOrbit <support@inorbit.ai>  Fri, 25 Jun 2021 03:00:00 -0000
+
+ros-galactic-massrobotics-amr-sender (0.0.2-2focal) focal; urgency=high
+
+  * Changed package name to ``massrobotics_amr_sender``
+  * Changed repository folder organization
+
+ -- InOrbit <support@inorbit.ai>  Thu, 24 Jun 2021 03:00:00 -0000
+
+ros-galactic-massrobotics-amr-sender (0.0.1-2focal) focal; urgency=high
+
+  * Added support for Identity and Status reports
+  * Added support for several ROS2 messages
+    
+      * ``geometry_msgs/TwistStamped``
+      * ``sensor_msgs/BatteryState``
+      * ``geometry_msgs/PoseStamped``
+      * ``nav_msgs/Path``
+      * ``std_msgs/String``
+      * ``std_msgs/Float32``
+      * ``std_msgs/Float64``
+    
+  * Added unit tests for all message callbacks
+  * Added ``3-Clause BSD License``
+
+ -- InOrbit <support@inorbit.ai>  Wed, 23 Jun 2021 03:00:00 -0000
+
+
