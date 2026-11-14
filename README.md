@@ -1,3 +1,33 @@
+## ros_amr_interop (humble) - 2.0.0-1
+
+The packages in the `ros_amr_interop` repository were released into the `humble` distro by running `/usr/bin/bloom-release --new-track --rosdistro humble --track humble ros_amr_interop` on `Sat, 14 Nov 2026 20:38:34 -0000`
+
+These packages were released:
+- `massrobotics_amr_sender`
+- `vda5050_connector`
+- `vda5050_msgs`
+- `vda5050_serializer`
+
+These packages were explicitly ignored:
+- `rmf_inorbit_fleet_adapter`
+
+Version of package(s) in repository `ros_amr_interop`:
+
+- upstream repository: https://github.com/inorbit-ai/ros_amr_interop.git
+- release repository: unknown
+- rosdistro version: `null`
+- old version: `null`
+- new version: `2.0.0-1`
+
+Versions of tools used:
+
+- bloom version: `0.14.4`
+- catkin_pkg version: `1.1.1`
+- rosdep version: `0.27.0`
+- rosdistro version: `1.1.0`
+- vcstools version: `0.1.42`
+
+
 ## ros_amr_interop (galactic) - 1.1.1-2
 
 The packages in the `ros_amr_interop` repository were released into the `galactic` distro by running `/usr/bin/bloom-release --rosdistro galactic ros_amr_interop` on `Mon, 31 Oct 2022 11:54:41 -0000`
