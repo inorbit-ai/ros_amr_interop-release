@@ -1,0 +1,13 @@
+Source: ros-humble-vda5050-msgs
+Section: misc
+Priority: optional
+Maintainer: "Jannik Abbenseth" <jba@ipa.fhg.de>
+Build-Depends: debhelper (>= 9.0.0), ros-humble-ament-cmake, ros-humble-rosidl-default-generators, ros-humble-std-msgs, ros-humble-ros-workspace, ros-humble-rosidl-typesupport-fastrtps-c, ros-humble-rosidl-typesupport-fastrtps-cpp
+Homepage: https://www.vda.de/dam/vda/publications/2019/Logistik/VDA5050.pdf
+Standards-Version: 3.9.2
+
+Package: ros-humble-vda5050-msgs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-humble-rosidl-default-runtime, ros-humble-std-msgs, ros-humble-ros-workspace
+Description: The vda5050_msgs package contains the datatypes (json objects) specified by the VDA &quot;Arbeitskreis Schlüsseltechnologien&quot; in their recommondation &quot;VDA 5050 - Schnittstelle zur Kommunikation zwischen Fahrerlosen Transportfahrzeugen (FTF) und einer Leitsteuerung.
+ This package provides the message files which can be used to be (de-)serialized with an implementation of mqtt (e.g mqtt_bridge) or to plain json (rospy_message_converter) or similar.

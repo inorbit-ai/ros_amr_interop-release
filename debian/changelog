@@ -1,0 +1,16 @@
+ros-humble-vda5050-msgs (2.0.0-1jammy) jammy; urgency=high
+
+  * **Breaking:** ``NodeState.position`` is now ``node_position`` and
+    ``OrderState.new_base_requested`` is now ``new_base_request``, the VDA 5050
+    field names. ``CurrentAction`` gains ``action_type``, and ``Trajectory.degree``
+    defaults to 1.0. (#42 <https://github.com/inorbit-ai/ros_amr_interop/issues/42>)
+
+ -- "Jannik Abbenseth" <jba@ipa.fhg.de>  Sat, 14 Nov 2026 00:00:00 -0000
+
+ros-humble-vda5050-msgs (1.1.1-1jammy) jammy; urgency=high
+
+  * Fixed ROS buildfarm job (#29 <https://github.com/inorbit-ai/ros_amr_interop/issues/29>)
+
+ -- "Jannik Abbenseth" <jba@ipa.fhg.de>  Fri, 28 Oct 2022 00:00:00 -0000
+
+
