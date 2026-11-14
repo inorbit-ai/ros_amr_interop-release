@@ -42,14 +42,15 @@ import os
 # ROS dependencies / utils
 from rclpy.node import Node
 
-from vda5050_connector.utils import get_vda5050_mqtt_topic
-from vda5050_connector.utils import get_vda5050_ros2_topic
-from vda5050_connector.utils import json_camel_to_snake_case
-from vda5050_connector.utils import read_str_parameter, read_int_parameter
-from vda5050_connector.utils import convert_ros_message_to_json
-from vda5050_connector.utils import get_vda5050_ts
+from vda5050_connector_py.utils import get_vda5050_mqtt_topic
+from vda5050_connector_py.utils import get_vda5050_ros2_topic
+from vda5050_connector_py.utils import json_camel_to_snake_case
+from vda5050_connector_py.utils import read_str_parameter, read_int_parameter
+from vda5050_connector_py.utils import convert_ros_message_to_json
+from vda5050_connector_py.utils import get_vda5050_ts
 
-from vda5050_connector.vda5050_controller import DEFAULT_PROTOCOL_VERSION
+from vda5050_connector_py.vda5050_controller import DEFAULT_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from vda5050_connector_py.vda5050_controller import OrderRejectErrors
 
 # ROS msgs / srvs / actions
 from vda5050_msgs.msg import Action as VDAAction
@@ -57,6 +58,8 @@ from vda5050_msgs.msg import ActionParameter as VDAActionParameter
 from vda5050_msgs.msg import Connection as VDAConnection
 from vda5050_msgs.msg import ControlPoint as VDAControlPoint
 from vda5050_msgs.msg import Edge as VDAEdge
+from vda5050_msgs.msg import Error as VDAError
+from vda5050_msgs.msg import ErrorReference as VDAErrorReference
 from vda5050_msgs.msg import InstantActions as VDAInstantActions
 from vda5050_msgs.msg import Node as VDANode
 from vda5050_msgs.msg import NodePosition as VDANodePosition
@@ -72,9 +75,9 @@ def generate_vda_order_msg(order):
     """
     Convert an Order message into a ROS2 Order message represented as a dict.
 
-    Arguments
-    ---------
-        order -- VDA5050 Order message
+    Args:
+    ----
+        order (VDAOrder): VDA5050 Order message
 
     Returns
     -------
@@ -85,8 +88,13 @@ def generate_vda_order_msg(order):
     for node in vda_order["nodes"]:
         # Force all numbers to float. Values with no decimals are
         # interpret as integers, causing the validation errors
-        for k in ["x", "y", "theta"]:
+        for k in ["x", "y"]:
             node["node_position"][k] = float(node["node_position"][k])
+        # VDA 5050 2.x nodePosition.theta is optional ("the vehicle can plan the path by
+        # itself"); NaN means "not given". Only a missing theta is "not given": the schema
+        # doesn't allow null, so "theta": null raises TypeError and the order is ignored.
+        theta = node["node_position"].get("theta", float("nan"))
+        node["node_position"]["theta"] = float(theta)
         node["node_position"] = VDANodePosition(**node["node_position"])
         for action in node["actions"]:
             if "action_parameters" in action:
@@ -133,6 +141,7 @@ def generate_vda_order_msg(order):
                     VDAControlPoint(
                         x=float(cp["x"]),
                         y=float(cp["y"]),
+                        orientation=float(cp.get("orientation", 0.0)),
                         weight=float(cp.get("weight", 1)),
                     )
                     for cp in edge["trajectory"]["control_points"]
@@ -147,11 +156,11 @@ def generate_vda_instant_action_msg(instant_action):
     """
     Convert an Instant Action message into a ROS2 Instant Action message represented as a dict.
 
-    Arguments
-    ---------
-        order -- VDA5050 Instant Action message
+    Args:
+    ----
+        instant_action (VDAInstantActions): VDA5050 Instant Action message
 
-    Return
+    Returns
     -------
         Instant Action dict message for building a ROS2 Instant Action object
 
@@ -194,6 +203,32 @@ def generate_vda_instant_action_msg(instant_action):
     return vda_instant_action
 
 
+def generate_vda5050_topic_alias(vda_version):
+    """
+    Create an alias for the current vda5050 version. The aliases are needed to
+    create the mqtt topics.
+
+    Args:
+    ----
+        vda_version (string): VDA5050 version with format x.x.x.
+
+    Raises:
+    ------
+        ValueError if the alias is not within the supported values.
+
+    Returns
+    -------
+        The alias of the version. For example, for the version '2.0.0', the alias is
+        'v2'
+    """
+    if vda_version in SUPPORTED_PROTOCOL_VERSIONS:
+        return f"v{vda_version[0]}"
+    else:
+        raise ValueError(
+            f"Invalid protocol major version. Supported versions are: {SUPPORTED_PROTOCOL_VERSIONS},"
+            f"but got {vda_version}"
+        )
+
 class MQTTBridge(Node):
     """Translates VDA5050 MQTT messages from and to ROS2."""
 
@@ -209,10 +244,15 @@ class MQTTBridge(Node):
         mqtt_username = read_str_parameter(self, "mqtt_username", "")
         mqtt_password = read_str_parameter(self, "mqtt_password", "")
 
+        self.vda5050_version = read_str_parameter(self, "vda5050_protocol_version", "2.0.0")
+        self.vda5050_version_alias = generate_vda5050_topic_alias(self.vda5050_version)
+
         self._manufacturer_name = read_str_parameter(
             self, "manufacturer_name", "robots"
         )
         self._serial_number = read_str_parameter(self, "serial_number", "robot_1")
+
+        self._interface_name = read_str_parameter(self, "interface_name", "uagv")
 
         # Configure MQTT
         self.mqtt_client = mqtt_client.Client()
@@ -238,6 +278,8 @@ class MQTTBridge(Node):
             manufacturer=self._manufacturer_name,
             serial_number=self._serial_number,
             topic="connection",
+            major_version=self.vda5050_version_alias,
+            interface_name=self._interface_name
         )
 
         # NOTE: will payload cannot be set dynamically or updated
@@ -247,7 +289,7 @@ class MQTTBridge(Node):
         will_payload = convert_ros_message_to_json(
             VDAConnection(
                 header_id=0,
-                version=DEFAULT_PROTOCOL_VERSION,
+                version=self.vda5050_version,
                 timestamp="1970-01-01T12:00:00.00Z",
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
@@ -262,22 +304,47 @@ class MQTTBridge(Node):
         self._last_connection_msg = None
 
         # Connect to MQTT broker
-        self.mqtt_client.connect_async(host=mqtt_address, port=int(mqtt_port))
+        self._mqtt_address = mqtt_address
+        self._mqtt_port = int(mqtt_port)
+        self._connect_to_broker()
+
         self.mqtt_client.loop_start()
+
+        self._connect_timer = self.create_timer(
+            timer_period_sec=5.0,
+            callback=self._connect_to_broker
+        )
 
         self.on_configure()
 
         self.logger.info(f"Node {NODE_NAME} has started successfully.")
 
+    def _connect_to_broker(self):
+        """Attempts to connect to the MQTT broker."""
+        if not self.mqtt_client.is_connected():
+            try:
+                self.mqtt_client.connect_async(host=self._mqtt_address, port=self._mqtt_port)
+                self.logger.info(f"Attempting to connect to MQTT broker at {self._mqtt_address}:{self._mqtt_port}...")
+            except Exception as e:
+                self.logger.error(f"Error during connection attempt: {e}. Will retry again.")
+                pass
+
     def on_connect_mqtt(self, client, userdata, flags, rc):
         """MQTT client connect callback."""
         if rc == 0:
             self.logger.info("Connected to MQTT Broker!")
+
+            # Cancel the connection timer
+            if hasattr(self, '_connect_timer'):
+                self._connect_timer.cancel()
+
             self.mqtt_client.subscribe(
                 get_vda5050_mqtt_topic(
                     manufacturer=self._manufacturer_name,
                     serial_number=self._serial_number,
                     topic="order",
+                    major_version=self.vda5050_version_alias,
+                    interface_name=self._interface_name
                 )
             )
             self.mqtt_client.subscribe(
@@ -285,12 +352,14 @@ class MQTTBridge(Node):
                     manufacturer=self._manufacturer_name,
                     serial_number=self._serial_number,
                     topic="instantActions",
+                    major_version=self.vda5050_version_alias,
+                    interface_name=self._interface_name
                 )
             )
             self._publish_connection(
                 msg=VDAConnection(
                     header_id=0,
-                    version=DEFAULT_PROTOCOL_VERSION,
+                    version=self.vda5050_version,
                     timestamp=get_vda5050_ts(),
                     manufacturer=self._manufacturer_name,
                     serial_number=self._serial_number,
@@ -299,29 +368,64 @@ class MQTTBridge(Node):
             )
 
         else:
-            self.logger.error("Failed to connect, return code %d\n", rc)
+            self.logger.error(f"Failed to connect, return code {rc}")
 
     def on_message_mqtt(self, client, userdata, msg):
         """MQTT client message callback."""
         try:
             msg_json = json_camel_to_snake_case(msg.payload)
+            if not isinstance(msg_json, dict):
+                raise ValueError("not a JSON object")
             self.logger.debug(f"Received '{msg_json}' from '{msg.topic}' topic")
-        except json.decoder.JSONDecodeError:
+        except ValueError as ex:
+            # JSONDecodeError, or UnicodeDecodeError for a payload that isn't UTF-8. Uncaught,
+            # it would end the MQTT client's network thread.
             self.logger.error(f"Failed to decode message: '{msg.payload}'")
+            if msg.topic.endswith("order"):
+                self._report_undecodable_order(None, ex)
             return
 
         try:
             if msg.topic.endswith("order"):
-                vda_order_msg = VDAOrder(**generate_vda_order_msg(msg_json))
+                try:
+                    vda_order_msg = VDAOrder(**generate_vda_order_msg(msg_json))
+                except (KeyError, ValueError, TypeError, AssertionError) as ex:
+                    # AssertionError: the generated message classes assert on a field of the
+                    # wrong type or out of range, and on an unknown field
+                    self.logger.warn(f"Rejecting invalid VDA5050 order: {ex}.")
+                    self._report_undecodable_order(msg_json, ex)
+                    return
                 self._order_pub.publish(msg=vda_order_msg)
             if msg.topic.endswith("instantActions"):
                 vda_instant_actions_message = VDAInstantActions(
                     **generate_vda_instant_action_msg(msg_json)
                 )
                 self._instant_actions_pub.publish(msg=vda_instant_actions_message)
-        except KeyError as ex:
+        except (KeyError, ValueError, TypeError, AssertionError) as ex:
+            # TypeError: e.g. float(None) for a null number; AssertionError: a field of the
+            # wrong type, out of range or unknown. Uncaught, any of these would end the MQTT
+            # client's network thread.
             self.logger.warn(f"Ignoring invalid VDA5050 message: {ex}.")
             return
+
+    def _report_undecodable_order(self, msg_json, ex):
+        """Tell the controller an order could not be decoded (VDA 5050 validationError)."""
+        reason = f"missing field {ex}" if isinstance(ex, KeyError) else str(ex)
+        references = []
+        if isinstance(msg_json, dict):
+            for key in ("order_id", "order_update_id"):
+                if key in msg_json:
+                    references.append(
+                        VDAErrorReference(reference_key=key, reference_value=str(msg_json[key]))
+                    )
+        self._order_errors_pub.publish(
+            VDAError(
+                error_type=OrderRejectErrors.VALIDATION_ERROR.value,
+                error_description=f"order rejected: cannot decode: {reason}",
+                error_level=VDAError.WARNING,
+                error_references=references,
+            )
+        )
 
     def on_disconnect_mqtt(self, client, userdata, rc):
         """MQTT client disconnect callback."""
@@ -329,11 +433,6 @@ class MQTTBridge(Node):
             self.logger.info(
                 f"MQTT client disconnected (rc: {rc}, {error_string(rc)}). Trying to reconnect."
             )
-            while not self.mqtt_client.is_connected():
-                try:
-                    self.mqtt_client.reconnect()
-                except OSError:
-                    pass
         else:
             self.logger.info("Disconnected from MQTT Broker!")
 
@@ -351,6 +450,7 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="state",
+                interface_name=self._interface_name
             ),
             callback=self._publish_state,
             qos_profile=10,
@@ -362,6 +462,7 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="connection",
+                interface_name=self._interface_name
             ),
             callback=self._publish_connection,
             qos_profile=10,
@@ -373,6 +474,7 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="visualization",
+                interface_name=self._interface_name
             ),
             callback=self._publish_visualization,
             qos_profile=10,
@@ -384,7 +486,19 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="order",
+                interface_name=self._interface_name
             ),
+            qos_profile=10,
+        )
+
+        self._order_errors_pub = self.create_publisher(
+            msg_type=VDAError,
+            topic=get_vda5050_ros2_topic(
+                manufacturer=self._manufacturer_name,
+                serial_number=self._serial_number,
+                topic="order",
+                interface_name=self._interface_name
+            ) + "_errors",
             qos_profile=10,
         )
 
@@ -394,6 +508,7 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="instantActions",
+                interface_name=self._interface_name
             ),
             qos_profile=10,
         )
@@ -405,7 +520,7 @@ class MQTTBridge(Node):
 
         offline_message = VDAConnection(
             header_id=0,
-            version=DEFAULT_PROTOCOL_VERSION,
+            version=self.vda5050_version,
             timestamp=get_vda5050_ts(),
             manufacturer=self._manufacturer_name,
             serial_number=self._serial_number,
@@ -424,6 +539,8 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="order",
+                major_version=self.vda5050_version_alias,
+                interface_name=self._interface_name
             )
         )
         self.mqtt_client.unsubscribe(
@@ -431,6 +548,8 @@ class MQTTBridge(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="instantActions",
+                major_version=self.vda5050_version_alias,
+                interface_name=self._interface_name
             )
         )
 
@@ -440,10 +559,11 @@ class MQTTBridge(Node):
         """
         Publish a ROS2 message to an MQTT topic.
 
-        Arguments
-        ---------
-            msg -- VDA5050 ROS2 message.
-            topic -- topic for publishing the VDA5050 MQTT message.
+        Args:
+        ----
+            msg (Any): VDA5050 ROS2 message.
+            topic (str): topic for publishing the VDA5050 MQTT message.
+
         """
         json_msg = convert_ros_message_to_json(msg)
         self.logger.debug(f"Publishing MQTT message to topic {topic}: {json_msg}")
@@ -453,16 +573,28 @@ class MQTTBridge(Node):
         """
         Publish ROS2 OrderState message to the corresponding VDA5050 MQTT topic.
 
-        Arguments
-        ---------
-            msg -- VDA5050 ROS2 OrderState message.
+        Args:
+        ----
+            msg (VDAOrderState): VDA5050 ROS2 OrderState message.
+
         """
         topic = get_vda5050_mqtt_topic(
             manufacturer=self._manufacturer_name,
             serial_number=self._serial_number,
             topic="state",
+            major_version=self.vda5050_version_alias,
+            interface_name=self._interface_name
         )
-        self._publish_to_topic(msg, topic)
+        if self.vda5050_version_alias == "v1":
+            self._publish_to_topic(msg, topic)
+            return
+        # VDA 5050 2.x renamed the 1.x "informations" field to "information". The ROS message
+        # keeps the 1.x name, which adapters use.
+        state = json.loads(convert_ros_message_to_json(msg))
+        state["information"] = state.pop("informations")
+        state = json.dumps(state)
+        self.logger.debug(f"Publishing MQTT message to topic {topic}: {state}")
+        self.mqtt_client.publish(topic, state)
 
     def _publish_connection(self, msg: VDAConnection):
         """
@@ -472,9 +604,10 @@ class MQTTBridge(Node):
         of the latest ``header_id`` field. This is used to publish an offline Connection message
         when tearing down the node.
 
-        Arguments
-        ---------
-            msg -- VDA5050 ROS2 Connection message.
+        Args:
+        ----
+            msg (VDAConnection): VDA5050 ROS2 Connection message.
+
         """
         # Update the last connection message
         self._last_connection_msg = msg
@@ -482,6 +615,8 @@ class MQTTBridge(Node):
             manufacturer=self._manufacturer_name,
             serial_number=self._serial_number,
             topic="connection",
+            major_version=self.vda5050_version_alias,
+            interface_name=self._interface_name
         )
         self._publish_to_topic(msg, topic)
 
@@ -489,13 +624,16 @@ class MQTTBridge(Node):
         """
         Publish ROS2 Visualization message to the corresponding VDA5050 MQTT topic.
 
-        Arguments
-        ---------
-            msg -- VDA5050 ROS2 Visualization message.
+        Args:
+        ----
+            msg (VDAVisualization): VDA5050 ROS2 Visualization message.
+
         """
         topic = get_vda5050_mqtt_topic(
             manufacturer=self._manufacturer_name,
             serial_number=self._serial_number,
             topic="visualization",
+            major_version=self.vda5050_version_alias,
+            interface_name=self._interface_name
         )
         self._publish_to_topic(msg, topic)

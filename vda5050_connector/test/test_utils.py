@@ -29,12 +29,15 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+import json
+
 import pytest
 
-from vda5050_connector.utils import json_camel_to_snake_case
-from vda5050_connector.utils import json_snake_to_camel_case
-from vda5050_connector.utils import get_vda5050_mqtt_topic
-from vda5050_connector.utils import get_vda5050_ros2_topic
+from vda5050_connector_py.utils import json_camel_to_snake_case
+from vda5050_connector_py.utils import json_snake_to_camel_case
+from vda5050_connector_py.utils import get_vda5050_mqtt_topic
+from vda5050_connector_py.utils import get_vda5050_ros2_topic
+from rclpy.validate_topic_name import validate_topic_name
 
 
 @pytest.mark.parametrize(
@@ -70,7 +73,10 @@ def test_json_snake_to_camel_case(test_input, expected):
 @pytest.mark.parametrize(
     "test_input, expected",
     [
-        ({"manufacturer": "M", "serial_number": "SN", "topic": "order"}, "uagv/v1/M/SN/order"),
+        (
+            {"manufacturer": "M", "serial_number": "SN", "topic": "order", "major_version": "v1"},
+            "uagv/v1/M/SN/order",
+        ),
         (
             {
                 "manufacturer": "M",
@@ -125,10 +131,43 @@ def test_get_vda5050_mqtt_topic_exceptions(test_input, expectation):
             },
             "/foo/v2/M/SN/order",
         ),
+        # Serial numbers VDA5050 allows but ROS2 names don't
+        (
+            {"manufacturer": "M", "serial_number": "SN-0007", "topic": "order",
+             "major_version": "v2"},
+            "/uagv/v2/M/SN_0007/order",
+        ),
+        (
+            {"manufacturer": "KIT", "serial_number": "0001", "topic": "state",
+             "major_version": "v2"},
+            "/uagv/v2/KIT/_0001/state",
+        ),
+        (
+            {"manufacturer": "Acme-Robots", "serial_number": "AB.12:3", "topic": "order",
+             "major_version": "v2"},
+            "/uagv/v2/Acme_Robots/AB_12_3/order",
+        ),
+        # A multi-level interface name, e.g. for a cloud broker (VDA5050 section 6.3)
+        (
+            {"manufacturer": "M", "serial_number": "SN-0007", "topic": "order",
+             "interface_name": "fleet/uagv", "major_version": "v2"},
+            "/fleet/uagv/v2/M/SN_0007/order",
+        ),
     ],
 )
 def test_get_vda5050_ros2_topic(test_input, expected):
     assert get_vda5050_ros2_topic(**test_input) == expected
+
+
+@pytest.mark.parametrize("serial_number", ["SN-0007", "0001", "AB.12:3", "robot_1"])
+def test_get_vda5050_ros2_topic_is_a_valid_ros2_name(serial_number):
+    topic = get_vda5050_ros2_topic("Acme-Robots", serial_number, "order", major_version="v2")
+    validate_topic_name(topic)  # raises InvalidTopicNameException if not
+
+
+def test_get_vda5050_mqtt_topic_keeps_the_serial_number():
+    topic = get_vda5050_mqtt_topic("M", "SN-0007", "order", major_version="v2")
+    assert topic == "uagv/v2/M/SN-0007/order"
 
 
 @pytest.mark.parametrize(
@@ -153,3 +192,23 @@ def test_get_vda5050_ros2_topic(test_input, expected):
 def test_get_vda5050_ros2_topic_exceptions(test_input, expectation):
     with expectation:
         assert get_vda5050_ros2_topic(**test_input) == expectation
+
+
+def test_convert_ros_message_to_json_leaves_out_an_undefined_theta():
+    # A node without theta is NaN in ROS; the published state must stay valid JSON
+    import math
+    from vda5050_connector_py.utils import convert_ros_message_to_json
+    from vda5050_msgs.msg import NodePosition
+    from vda5050_msgs.msg import NodeState
+
+    node_state = NodeState(
+        node_id="n1", sequence_id=0, released=True,
+        node_position=NodePosition(x=1.0, y=2.0, theta=math.nan, map_id="map"),
+    )
+
+    def no_nan(token):
+        raise ValueError(f"{token} is not JSON")
+
+    msg = json.loads(convert_ros_message_to_json(node_state), parse_constant=no_nan)
+    assert "theta" not in msg["nodePosition"]
+    assert msg["nodePosition"]["x"] == 1.0

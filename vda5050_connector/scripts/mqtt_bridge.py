@@ -32,7 +32,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import rclpy
-from vda5050_connector.mqtt_bridge import MQTTBridge
+from vda5050_connector_py.mqtt_bridge import MQTTBridge
 
 
 def main(args=None):
@@ -51,7 +51,7 @@ def main(args=None):
         # Destroy the node explicitly
         # (optional - Done automatically when node is garbage collected)
         mqtt_bridge.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

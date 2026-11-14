@@ -19,16 +19,23 @@ The connector is composed of three main parts (ROS2 nodes):
 The way the adapter knows how to execute the different operations requested by the controller is using ROS2 plugins (components). The current project provides three plugin template interfaces, called handlers, which cover the main communication paths:
 
 - **State handler**: Designed for updating robot specific information on the VDA5050 [order_state](https://github.com/ipa320/vda5050_msgs/blob/ros2-vda5050-v2/vda5050_msgs/msg/OrderState.msg).
-- **NavTONode handler**: Designed for sending goals to the robot navigation stack.
+- **NavToNode handler**: Designed for sending goals to the robot navigation stack one node at a time.
+- **NavThroughNodes handler**: Designed for sending multi-node navigation goals, with optional in-flight goal extension via the `ExtendNavigation` service (VDA5050 order stitching).
 - **VDA Action handler**: Designed for handling requests to execute specific actions (localize, lift a load, etc).
 
 ![Connector diagram](./docs/source/_static/connector_package.png)
+
+For a full guide on implementing `NavThroughNodes` and the `ExtendNavigation` in-flight extension feature, see [docs/source/nav_through_nodes.md](./docs/source/nav_through_nodes.md).
 
 ## How to use it
 
 The package is also a library package; it exports the headers and binary files to create and assemble a specific adapter. To create your own adapter package, add this package as a dependency and define the different plugin handlers for your robot. You can also customize the adapter core functionalities if desired.
 
 To do this this, you can check the [vda5050_examples](https://github.com/inorbit-ai/vda5050_adapter_examples) repository, where you will find examples of adapter packages, for python and C++, as well as docker scripts to quickly start testing them.
+
+### Nodes without `theta`
+
+`theta` is optional in a node's `nodePosition`: without it, the vehicle may plan its own heading. The connector passes a missing `theta` to the adapter as NaN, so NavToNode and NavThroughNodes handlers may receive `node_position.theta` as NaN; check it with `std::isnan` (C++) or `math.isnan` (Python). `get_pose_from_node` falls back to yaw 0 for such a node rather than returning a NaN quaternion. An order with `"theta": null` isn't schema-valid and is ignored.
 
 ### Dependencies
 
@@ -39,23 +46,33 @@ To do this this, you can check the [vda5050_examples](https://github.com/inorbit
 
 ### Compilation
 
-Download `vda5050_msgs` package into your ROS2 workspace
+Start a docker container with the required packages mounted on `dev_ws`:
 
 ```bash
-cd ~/dev_ws/ &&
-git clone --branch ros2-vda5050-v2 https://github.com/ipa320/vda5050_msgs.git \
-    && mv vda5050_msgs/vda5050_msgs ./src/vda5050_msgs \
-    && mv vda5050_msgs/vda5050_serializer ./src/vda5050_serializer \
-    && rm -rf vda5050_msgs
+# Go to the repository root folder and execute
+docker run -ti --rm \
+    --workdir /dev_ws/ \
+    -v ./vda5050_msgs:/dev_ws/src/vda5050_msgs \
+    -v ./vda5050_serializer:/dev_ws/src/vda5050_serializer \
+    -v ./vda5050_connector:/dev_ws/src/vda5050_connector \
+    osrf/ros:humble-desktop-full
 ```
 
-Then download this package into the ROS2 workspace `src` folder and compile it using `colcon build`.
+Now build the package:
+
+```bash
+apt update && apt install ros-humble-ament* -y
+cd /dev_ws/
+colcon build --symlink-install
+```
 
 ### Testing
 
 The package provides several lint test (`ament_pep257` and `ament_flake8` for Python, `ament_clang_format` for C++ and `ament_copyright`), as well as specific unit tests to check the correct functionality of the different modules. To run the tests, execute:
 
 ```sh
+cd /dev_ws/
+rosdep install --from-paths src -y --ignore-src
 colcon test --packages-select vda5050_connector && colcon test-result --verbose
 ```
 

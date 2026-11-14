@@ -29,18 +29,23 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+import gc
+
 import pytest
 import paho.mqtt.client as mqtt
 
 import rclpy
 from vda5050_connector.action import NavigateToNode
+from vda5050_connector.action import NavigateThroughNodes
 from vda5050_connector.action import ProcessVDAAction
-from vda5050_connector.vda5050_controller import DEFAULT_NAV_TO_NODE_ACT_NAME
-from vda5050_connector.vda5050_controller import DEFAULT_VDA_ACTION_ACT_NAME
+from vda5050_connector_py.vda5050_controller import DEFAULT_NAV_TO_NODE_ACT_NAME
+from vda5050_connector_py.vda5050_controller import DEFAULT_NAV_THROUGH_NODES_ACT_NAME
+from vda5050_connector_py.vda5050_controller import DEFAULT_VDA_ACTION_ACT_NAME
+from vda5050_connector.srv import ExtendNavigation
 from vda5050_connector.srv import GetState
-from vda5050_connector.vda5050_controller import DEFAULT_GET_STATE_SVC_NAME
+from vda5050_connector_py.vda5050_controller import DEFAULT_GET_STATE_SVC_NAME
 from vda5050_connector.srv import SupportedActions
-from vda5050_connector.vda5050_controller import DEFAULT_SUPPORTED_ACTIONS_SVC_NAME
+from vda5050_connector_py.vda5050_controller import DEFAULT_SUPPORTED_ACTIONS_SVC_NAME
 from rclpy.qos import qos_profile_action_status_default
 
 
@@ -90,6 +95,57 @@ class MockActionServerNavigateToNode:
 
     def publish_feedback(self, feedback):
         feedback_message = NavigateToNode.Impl.FeedbackMessage(
+            goal_id=self.goal_id, feedback=feedback
+        )
+        self.feedback_pub.publish(feedback_message)
+
+
+class MockActionServerNavigateThroughNodes:
+    def __init__(self, node):
+        self.logger = node.get_logger()
+        self.goal_srv = node.create_service(
+            NavigateThroughNodes.Impl.SendGoalService,
+            f"/vda5050/robots/robot_1/{DEFAULT_NAV_THROUGH_NODES_ACT_NAME}/_action/send_goal",
+            self.goal_callback,
+        )
+        self.cancel_srv = node.create_service(
+            NavigateThroughNodes.Impl.CancelGoalService,
+            f"/vda5050/robots/robot_1/{DEFAULT_NAV_THROUGH_NODES_ACT_NAME}/_action/cancel_goal",
+            self.cancel_callback,
+        )
+        self.result_srv = node.create_service(
+            NavigateThroughNodes.Impl.GetResultService,
+            f"/vda5050/robots/robot_1/{DEFAULT_NAV_THROUGH_NODES_ACT_NAME}/_action/get_result",
+            self.result_callback,
+        )
+        self.feedback_pub = node.create_publisher(
+            NavigateThroughNodes.Impl.FeedbackMessage,
+            f"/vda5050/robots/robot_1/{DEFAULT_NAV_THROUGH_NODES_ACT_NAME}/_action/feedback",
+            1,
+        )
+        self.goal_status_pub = node.create_publisher(
+            NavigateThroughNodes.Impl.GoalStatusMessage,
+            f"/vda5050/robots/robot_1/{DEFAULT_NAV_THROUGH_NODES_ACT_NAME}/_action/status",
+            qos_profile_action_status_default,
+        )
+
+    def goal_callback(self, request, response):
+        # Save goal ID to send feedback later
+        self.goal_id = request.goal_id
+        response.accepted = True
+        self.logger.info(f"Goal received {response}")
+        return response
+
+    def cancel_callback(self, request, response):
+        response.goals_canceling.append(request.goal_info)
+        return response
+
+    def result_callback(self, request, response):
+        self.logger.info(f"Result callback: {response}")
+        return response
+
+    def publish_feedback(self, feedback):
+        feedback_message = NavigateThroughNodes.Impl.FeedbackMessage(
             goal_id=self.goal_id, feedback=feedback
         )
         self.feedback_pub.publish(feedback_message)
@@ -146,29 +202,38 @@ class MockActionServerProcessVDAAction:
         self.feedback_pub.publish(feedback_message)
 
 
-@pytest.fixture()
+@pytest.fixture
 def setup_rclpy():
+    # Free the previous test's nodes now. They are only freed by the garbage collector, which
+    # would otherwise run in the middle of this test: that can stall DDS discovery (an action
+    # client never sees its server) or crash rclpy.
+    gc.collect()
     rclpy.init()
     yield
     rclpy.shutdown()
 
 
-@pytest.fixture()
+@pytest.fixture
 def adapter_node(setup_rclpy):
     return rclpy.create_node("FakeAdapter")
 
 
-@pytest.fixture()
+@pytest.fixture
 def action_server_nav_to_node(adapter_node):
     return MockActionServerNavigateToNode(adapter_node)
 
 
-@pytest.fixture()
+@pytest.fixture
+def action_server_nav_through_nodes(adapter_node):
+    return MockActionServerNavigateThroughNodes(adapter_node)
+
+
+@pytest.fixture
 def action_server_process_vda_action(adapter_node):
     return MockActionServerProcessVDAAction(adapter_node)
 
 
-@pytest.fixture()
+@pytest.fixture
 def service_get_state(adapter_node):
     return adapter_node.create_service(
         GetState,
@@ -177,12 +242,27 @@ def service_get_state(adapter_node):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def service_supported_actions(adapter_node):
     return adapter_node.create_service(
         SupportedActions,
         f"/vda5050/robots/robot_1/{DEFAULT_SUPPORTED_ACTIONS_SVC_NAME}",
         lambda _: adapter_node.get_logger().info("Supported actions request"),
+    )
+
+
+@pytest.fixture
+def service_extend_navigation(adapter_node):
+    """Mock ExtendNavigation service that always succeeds."""
+    def _callback(request, response):
+        response.success = True
+        response.message = f"Extended with {len(request.nodes) - 1} new nodes"
+        return response
+
+    return adapter_node.create_service(
+        ExtendNavigation,
+        "/vda5050/robots/robot_1/adapter/extend_navigation",
+        _callback,
     )
 
 
@@ -196,6 +276,8 @@ def mock_mqtt_client(mocker):
     mock_mqtt_client.unsubscribe = mocker.MagicMock(return_value=(fake_rc, fake_mid))
     mock_mqtt_client.publish = mocker.MagicMock(return_value=(fake_rc, fake_mid))
     mock_mqtt_client.connect.return_value = 0
+    # The bridge only calls connect_async() while disconnected
+    mock_mqtt_client.is_connected.return_value = False
     mock_mqtt_client.reconnect.return_value = 0
     mock_mqtt_client.disconnect.return_value = 0
     return mock_mqtt_client

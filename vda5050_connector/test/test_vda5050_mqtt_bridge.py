@@ -29,6 +29,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+import math
 import ssl
 from uuid import uuid4
 from paho.mqtt.client import MQTTMessage
@@ -36,11 +37,11 @@ from unittest.mock import MagicMock
 import pytest
 import json
 
-from vda5050_connector.utils import get_vda5050_ts
-from vda5050_connector.mqtt_bridge import generate_vda_order_msg
-from vda5050_connector.mqtt_bridge import generate_vda_instant_action_msg
-from vda5050_connector.mqtt_bridge import MQTTBridge
-from vda5050_connector.utils import convert_ros_message_to_json
+from vda5050_connector_py.utils import get_vda5050_ts
+from vda5050_connector_py.mqtt_bridge import generate_vda_order_msg
+from vda5050_connector_py.mqtt_bridge import generate_vda_instant_action_msg
+from vda5050_connector_py.mqtt_bridge import MQTTBridge
+from vda5050_connector_py.utils import convert_ros_message_to_json
 
 from vda5050_msgs.msg import Order
 from vda5050_msgs.msg import Node
@@ -48,6 +49,7 @@ from vda5050_msgs.msg import Edge
 from vda5050_msgs.msg import OrderState
 from vda5050_msgs.msg import Action
 from vda5050_msgs.msg import Connection
+from vda5050_msgs.msg import Error
 from vda5050_msgs.msg import Visualization
 from vda5050_msgs.msg import InstantActions
 
@@ -369,6 +371,26 @@ def test_vda5050_mqtt_bridge_generate_vda_order_msg(mocker):
     assert edge_3.actions == []
 
 
+def test_vda5050_mqtt_bridge_generate_vda_order_msg_without_theta(mocker):
+    # theta is optional in nodePosition: a missing theta becomes NaN ("not given")
+    order = get_order()
+    del order["nodes"][0]["node_position"]["theta"]
+    order_vda_msg = generate_vda_order_msg(order)
+
+    nodes = order_vda_msg["nodes"]
+    assert math.isnan(nodes[0].node_position.theta)
+    assert nodes[0].node_position.x == -2.0
+    assert nodes[1].node_position.theta == 0.0
+
+
+def test_vda5050_mqtt_bridge_generate_vda_order_msg_null_theta(mocker):
+    # The schema doesn't allow "theta": null, so it's an error, not "not given"
+    order = get_order()
+    order["nodes"][0]["node_position"]["theta"] = None
+    with pytest.raises(TypeError):
+        generate_vda_order_msg(order)
+
+
 def test_vda5050_mqtt_bridge_generate_vda_instant_action_msg(mocker):
     instant_action = get_instant_action()
     instant_action_vda_msg = generate_vda_instant_action_msg(instant_action)
@@ -449,7 +471,7 @@ def test_vda5050_mqtt_bridge_defaults(setup_rclpy, mocker, mock_mqtt_client):
     will_payload = convert_ros_message_to_json(msg)
 
     mqtt_client.will_set.assert_called_with(
-        topic="uagv/v1/robots/robot_1/connection",
+        topic="uagv/v2/robots/robot_1/connection",
         payload=will_payload,
         qos=1,
         retain=True,
@@ -467,10 +489,10 @@ def test_vda5050_mqtt_bridge_defaults_with_tls(
             "mqtt_password": "password",
             "manufacturer_name": "robots",
             "serial_number": "robot_1",
-        }[param_name]
+        }.get(param_name, alternative)
 
     mocker.patch(
-        "vda5050_connector.mqtt_bridge.read_str_parameter",
+        "vda5050_connector_py.mqtt_bridge.read_str_parameter",
         side_effect=mock_read_str_parameter,
     )
     mqtt_bridge = MQTTBridge()
@@ -669,3 +691,177 @@ def test_vda5050_mqtt_bridge_on_valid_vda5050_mqtt_messages(
         mqtt_bridge._instant_actions_pub.publish.assert_called_once()
     else:
         assert False
+
+
+def get_order_with_one_node(node_position):
+    return json.dumps(
+        {
+            "headerId": 1,
+            "timestamp": "1970-01-01T12:00:00.00Z",
+            "version": "2.0.0",
+            "manufacturer": "foo",
+            "serialNumber": "123",
+            "orderId": "order1",
+            "orderUpdateId": 0,
+            "nodes": [
+                {
+                    "nodeId": "node1",
+                    "sequenceId": 0,
+                    "released": True,
+                    "nodePosition": node_position,
+                    "actions": [],
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "node_position,published",
+    [
+        ({"x": 1.0, "y": 2.0, "mapId": "map"}, True),
+        ({"x": 1.0, "y": 2.0, "theta": None, "mapId": "map"}, False),
+    ],
+)
+def test_vda5050_mqtt_bridge_on_order_theta_missing_or_null(
+    setup_rclpy, mocker, mock_mqtt_client, node_position, published
+):
+    # A missing theta is accepted; a null theta is ignored without raising, which would
+    # end the MQTT client's network thread
+    mqtt_bridge = MQTTBridge()
+    mocker.patch.object(mqtt_bridge, "_order_pub", return_value=MagicMock())
+    mocker.patch.object(mqtt_bridge, "_instant_actions_pub", return_value=MagicMock())
+
+    mqtt_message = MQTTMessage(topic=str.encode("foo/bar/order"))
+    mqtt_message.payload = str.encode(get_order_with_one_node(node_position))
+    mqtt_bridge.on_message_mqtt(mqtt_bridge.mqtt_client, ..., mqtt_message)
+
+    if published:
+        mqtt_bridge._order_pub.publish.assert_called_once()
+        order = mqtt_bridge._order_pub.publish.call_args.kwargs["msg"]
+        assert math.isnan(order.nodes[0].node_position.theta)
+    else:
+        mqtt_bridge._order_pub.publish.assert_not_called()
+
+
+def get_order_json_with(path, value):
+    # A valid order with one field (a key path, or a new key for an unknown field) set to value
+    node_position = {"x": 1.0, "y": 2.0, "theta": 0.0, "mapId": "map"}
+    order = json.loads(get_order_with_one_node(node_position))
+    *parents, key = path
+    target = order
+    for parent in parents:
+        target = target[parent]
+    if value is KeyError:
+        del target[key]
+    else:
+        target[key] = value
+    return json.dumps(order)
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (["orderId"], 123),  # wrong type: AssertionError from the message class
+        (["orderUpdateId"], "1"),
+        (["orderUpdateId"], -1),  # out of range (uint32)
+        (["nodes", 0, "sequenceId"], 2.5),
+        (["fooBar"], "baz"),  # unknown field
+        (["nodes"], KeyError),  # missing required field
+        (["nodes", 0, "nodePosition", "theta"], None),  # null number: TypeError
+    ],
+)
+def test_vda5050_mqtt_bridge_reports_undecodable_orders(
+    setup_rclpy, mocker, mock_mqtt_client, path, value
+):
+    # VDA 5050 6.6.4.1: a malformed order is rejected with a validationError in the state,
+    # not dropped silently, and must not end the MQTT client's network thread
+    mqtt_bridge = MQTTBridge()
+    mocker.patch.object(mqtt_bridge, "_order_pub", return_value=MagicMock())
+    mocker.patch.object(mqtt_bridge, "_order_errors_pub", return_value=MagicMock())
+
+    mqtt_message = MQTTMessage(topic=str.encode("foo/bar/order"))
+    mqtt_message.payload = str.encode(get_order_json_with(path, value))
+    mqtt_bridge.on_message_mqtt(mqtt_bridge.mqtt_client, ..., mqtt_message)
+
+    mqtt_bridge._order_pub.publish.assert_not_called()
+    mqtt_bridge._order_errors_pub.publish.assert_called_once()
+    error = mqtt_bridge._order_errors_pub.publish.call_args.args[0]
+    assert error.error_type == "validationError"
+    assert error.error_level == Error.WARNING
+    assert error.error_description.startswith("order rejected: cannot decode: ")
+    assert error.error_references[0].reference_key == "order_id"
+    assert error.error_references[0].reference_value == ("123" if path == ["orderId"] else "order1")
+
+
+def test_vda5050_mqtt_bridge_ignores_instant_actions_of_the_wrong_type(
+    setup_rclpy, mocker, mock_mqtt_client
+):
+    # AssertionError from the message class is caught for instant actions too
+    mqtt_bridge = MQTTBridge()
+    mocker.patch.object(mqtt_bridge, "_instant_actions_pub", return_value=MagicMock())
+    mocker.patch.object(mqtt_bridge, "_order_errors_pub", return_value=MagicMock())
+
+    mqtt_message = MQTTMessage(topic=str.encode("foo/bar/instantActions"))
+    mqtt_message.payload = json.dumps(
+        {
+            "headerId": "one",
+            "timestamp": "1970-01-01T12:00:00.00Z",
+            "version": "2.0.0",
+            "manufacturer": "foo",
+            "serialNumber": "123",
+            "actions": [],
+        }
+    ).encode()
+    mqtt_bridge.on_message_mqtt(mqtt_bridge.mqtt_client, ..., mqtt_message)
+
+    mqtt_bridge._instant_actions_pub.publish.assert_not_called()
+    mqtt_bridge._order_errors_pub.publish.assert_not_called()
+
+
+@pytest.mark.parametrize("payload", [b"\x80abc", b"{bad", b"[]", b"null", b"5"])
+def test_vda5050_mqtt_bridge_rejects_undecodable_payloads(
+    setup_rclpy, mocker, mock_mqtt_client, payload
+):
+    # A payload that isn't UTF-8, isn't JSON or isn't a JSON object must not end the MQTT
+    # client's network thread. On the order topic it is a malformed order (validationError).
+    mqtt_bridge = MQTTBridge()
+    for publisher in ("_order_pub", "_instant_actions_pub", "_order_errors_pub"):
+        mocker.patch.object(mqtt_bridge, publisher, return_value=MagicMock())
+
+    for topic in ("order", "instantActions"):
+        mqtt_message = MQTTMessage(topic=str.encode(f"foo/bar/{topic}"))
+        mqtt_message.payload = payload
+        mqtt_bridge.on_message_mqtt(mqtt_bridge.mqtt_client, ..., mqtt_message)
+
+    mqtt_bridge._order_pub.publish.assert_not_called()
+    mqtt_bridge._instant_actions_pub.publish.assert_not_called()
+    mqtt_bridge._order_errors_pub.publish.assert_called_once()
+    error = mqtt_bridge._order_errors_pub.publish.call_args.args[0]
+    assert error.error_type == "validationError"
+    assert error.error_references == []
+
+
+@pytest.mark.parametrize(
+    "version, key, other_key",
+    [("2.0.0", "information", "informations"), ("1.1.0", "informations", "information")],
+)
+def test_vda5050_mqtt_bridge_state_information_field(
+    setup_rclpy, mocker, mock_mqtt_client, version, key, other_key
+):
+    # VDA 5050 2.x renamed the state's "informations" (1.x) to "information"
+    mocker.patch(
+        "vda5050_connector_py.mqtt_bridge.read_str_parameter",
+        side_effect=lambda node, name, alternative: (
+            version if name == "vda5050_protocol_version" else alternative
+        ),
+    )
+    mqtt_bridge = MQTTBridge()
+    mqtt_bridge._publish_state(OrderState())
+
+    topic, payload = mqtt_bridge.mqtt_client.publish.call_args.args
+    assert topic.endswith("/state")
+    state = json.loads(payload)
+    assert state[key] == []
+    assert other_key not in state

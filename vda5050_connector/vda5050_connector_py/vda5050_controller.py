@@ -33,6 +33,7 @@
 
 # Python dependencies
 from enum import Enum
+import math
 import itertools
 import functools
 
@@ -42,13 +43,13 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.task import Future
 
-from vda5050_connector.utils import get_vda5050_ros2_topic
-from vda5050_connector.utils import get_vda5050_ts
-from vda5050_connector.utils import read_bool_parameter
-from vda5050_connector.utils import read_double_parameter
-from vda5050_connector.utils import read_int_parameter
-from vda5050_connector.utils import read_str_array_parameter
-from vda5050_connector.utils import read_str_parameter
+from vda5050_connector_py.utils import get_vda5050_ros2_topic
+from vda5050_connector_py.utils import get_vda5050_ts
+from vda5050_connector_py.utils import read_bool_parameter
+from vda5050_connector_py.utils import read_double_parameter
+from vda5050_connector_py.utils import read_int_parameter
+from vda5050_connector_py.utils import read_str_array_parameter
+from vda5050_connector_py.utils import read_str_parameter
 
 # ROS msgs / srvs / actions
 from vda5050_msgs.msg import Action as VDAAction
@@ -80,10 +81,13 @@ from vda5050_msgs.msg import Timing as VDATiming
 from vda5050_msgs.msg import TypeSpecification as VDATypeSpecification
 from vda5050_msgs.msg import Visualization as VDAVisualization
 from vda5050_msgs.msg import WheelDefinition as VDAWheelDefinition
+from action_msgs.msg import GoalStatus
 
+from vda5050_connector.srv import ExtendNavigation
 from vda5050_connector.srv import GetState
 from vda5050_connector.srv import SupportedActions
 
+from vda5050_connector.action import NavigateThroughNodes
 from vda5050_connector.action import NavigateToNode
 from vda5050_connector.action import ProcessVDAAction
 
@@ -94,11 +98,16 @@ DEFAULT_ROBOT_NAME = "robot_1"
 DEFAULT_MANUFACTURER_NAME = "robots"
 DEFAULT_SERIAL_NUMBER = "robot_1"
 DEFAULT_PROTOCOL_VERSION = "2.0.0"
+DEFAULT_STARTING_NODE_ID = ""
+SUPPORTED_PROTOCOL_VERSIONS = ["1.1.0", "2.0.0"]
+DEFAULT_NAV_THROUGH_NODES = False
+DEFAULT_INTERFACE_NAME = "uagv"
 
 DEFAULT_GET_STATE_SVC_NAME = "adapter/get_state"
 DEFAULT_SUPPORTED_ACTIONS_SVC_NAME = "adapter/supported_actions"
 DEFAULT_VDA_ACTION_ACT_NAME = "adapter/vda_action"
 DEFAULT_NAV_TO_NODE_ACT_NAME = "adapter/nav_to_node"
+DEFAULT_NAV_THROUGH_NODES_ACT_NAME = "adapter/nav_through_nodes"
 
 DEFAULT_STATE_PUB_PERIOD = 5.0  # sec
 DEFAULT_CONNECTION_PUB_PERIOD = 15.0  # sec
@@ -110,13 +119,14 @@ class ActionErrors(Enum):
     """Action Error types."""
 
     ACTION_NOT_FOUND = "actionNotFound"
+    ACTION_FAILED = "actionFailed"
     NO_ORDER_TO_CANCEL = "noOrderToCancel"
 
 
 class OrderRejectErrors(Enum):
     """Order Processing - Reject Error types."""
 
-    VALIDATION_ERROR = "validationOrder"
+    VALIDATION_ERROR = "validationError"  # the VDA 5050 error type (was "validationOrder")
     ORDER_UPDATE_ERROR = "orderUpdateError"
     NO_ROUTE_ERROR = "noRouteError"
 
@@ -147,13 +157,16 @@ class VDA5050Controller(Node):
         self._read_parameters()
 
         self._cancel_action = None
+        self._instant_action_ids = set()
         self._current_node_actions = []
+        self._current_node_goal = None
         self._current_order = VDAOrder(order_id="-1")
         self._current_state = VDAOrderState(
             header_id=0,
             version=self._protocol_version,
             manufacturer=self._manufacturer_name,
             serial_number=self._serial_number,
+            last_node_id=self._starting_node_id,
             operating_mode=VDAOrderState.AUTOMATIC,
             safety_state=VDASafetyState(e_stop=VDASafetyState.NONE, field_violation=False),
         )
@@ -189,6 +202,8 @@ class VDA5050Controller(Node):
         """Read and load ROS parameters."""
         # Robot information
         self._robot_name = read_str_parameter(self, "robot_name", DEFAULT_ROBOT_NAME)
+        self._starting_node_id = read_str_parameter(self, "starting_node_id",
+                                                    DEFAULT_STARTING_NODE_ID)
         self._manufacturer_name = read_str_parameter(
             self, "manufacturer_name", DEFAULT_MANUFACTURER_NAME
         )
@@ -196,6 +211,8 @@ class VDA5050Controller(Node):
         self._protocol_version = read_str_parameter(
             self, "protocol_version", DEFAULT_PROTOCOL_VERSION
         )
+        self._enable_nav_through_nodes = read_bool_parameter(
+            self, "enable_nav_through_nodes", DEFAULT_NAV_THROUGH_NODES)
         # ROS interfaces names
         self._get_state_svc_name = read_str_parameter(
             self, "get_state_svc_name", DEFAULT_GET_STATE_SVC_NAME
@@ -208,6 +225,9 @@ class VDA5050Controller(Node):
         )
         self._nav_to_node_act_name = read_str_parameter(
             self, "nav_to_node_act_name", DEFAULT_NAV_TO_NODE_ACT_NAME
+        )
+        self._nav_through_nodes_act_name = read_str_parameter(
+            self, "nav_through_nodes_act_name", DEFAULT_NAV_THROUGH_NODES_ACT_NAME
         )
         # Timer periods
         self._state_pub_period = read_double_parameter(
@@ -222,6 +242,11 @@ class VDA5050Controller(Node):
         self._execute_order_period = read_double_parameter(
             self, "execute_order_period", DEFAULT_EXECUTE_ORDER_PERIOD
         )
+        self._interface_name = read_str_parameter(self, "interface_name", DEFAULT_INTERFACE_NAME)
+        # VDA 5050 2.1 6.7.1: maps the vehicle has. Empty = do not check orders' mapIds.
+        # [""], not []: rclpy types an empty default as BYTE_ARRAY and then refuses a string list.
+        self._known_map_ids = [m for m in read_str_array_parameter(self, "known_map_ids", [""]) if m]
+
 
     # ---- Configure ROS interfaces ----
 
@@ -230,17 +255,33 @@ class VDA5050Controller(Node):
         base_interface_name = (
             f"{self.get_namespace()}/{self._manufacturer_name}/{self._robot_name}/"
         )
-        # Action client for sending NavigateToNode goals to adapter
-        self._navigate_to_node_act_cli = ActionClient(
-            node=self,
-            action_type=NavigateToNode,
-            action_name=base_interface_name + self._nav_to_node_act_name,
-        )
-        while not self._navigate_to_node_act_cli.wait_for_server(timeout_sec=1.0):
-            self.logger.error(
-                "NavigateToNode adapter action server not available, waiting again..."
+
+        if self._enable_nav_through_nodes:
+            # Action client for sending NavigateThroughNodes goals to adapter
+            self._navigate_through_nodes_act_cli = ActionClient(
+                node=self,
+                action_type=NavigateThroughNodes,
+                action_name=base_interface_name + self._nav_through_nodes_act_name,
             )
-        self._navigate_to_node_goal_handle = None
+            while not self._navigate_through_nodes_act_cli.wait_for_server(timeout_sec=1.0):
+                self.logger.error(
+                    "NavigateThroughNodes adapter action server not available, waiting again..."
+                )
+            self._navigate_through_nodes_goal_handle = None
+            self._nav_through_nodes_goal_pending = False
+            self._nav_through_nodes_last_seq = 0
+        else:
+            # Action client for sending NavigateToNode goals to adapter
+            self._navigate_to_node_act_cli = ActionClient(
+                node=self,
+                action_type=NavigateToNode,
+                action_name=base_interface_name + self._nav_to_node_act_name,
+            )
+            while not self._navigate_to_node_act_cli.wait_for_server(timeout_sec=1.0):
+                self.logger.error(
+                    "NavigateToNode adapter action server not available, waiting again..."
+                )
+            self._navigate_to_node_goal_handle = None
 
         # Action client for sending ProcessVDAAction goals to adapter
         self._process_vda_action_act_cli = ActionClient(
@@ -277,6 +318,14 @@ class VDA5050Controller(Node):
         while not self._supported_actions_svc_cli.wait_for_service(timeout_sec=1.0):
             self.logger.error("SupportedActions adapter service not available, waiting again...")
 
+        # Service client to extend an in-flight navigation goal (nav_through_nodes only)
+        if self._enable_nav_through_nodes:
+            self._extend_nav_svc_cli = self.create_client(
+                srv_type=ExtendNavigation,
+                srv_name=base_interface_name + "adapter/extend_navigation",
+                callback_group=MutuallyExclusiveCallbackGroup(),
+            )
+
     def _configure_subscriptions(self):
         """Configure Master Control to Robot topic msgs."""
         # Process orders coming from the Master Control
@@ -286,8 +335,22 @@ class VDA5050Controller(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="order",
+                interface_name=self._interface_name
             ),
             callback=self.process_order,
+            qos_profile=10,
+        )
+
+        # Orders the bridge could not decode: report them as rejected
+        self._order_errors_sub = self.create_subscription(
+            msg_type=VDAError,
+            topic=get_vda5050_ros2_topic(
+                manufacturer=self._manufacturer_name,
+                serial_number=self._serial_number,
+                topic="order",
+                interface_name=self._interface_name
+            ) + "_errors",
+            callback=self._report_undecodable_order,
             qos_profile=10,
         )
 
@@ -298,6 +361,7 @@ class VDA5050Controller(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="instantActions",
+                interface_name=self._interface_name
             ),
             callback=self.process_instant_actions,
             qos_profile=10,
@@ -312,6 +376,7 @@ class VDA5050Controller(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="state",
+                interface_name=self._interface_name
             ),
             qos_profile=10,
         )
@@ -323,6 +388,7 @@ class VDA5050Controller(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="connection",
+                interface_name=self._interface_name
             ),
             qos_profile=10,
         )
@@ -334,6 +400,7 @@ class VDA5050Controller(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="visualization",
+                interface_name=self._interface_name
             ),
             qos_profile=10,
         )
@@ -345,6 +412,7 @@ class VDA5050Controller(Node):
                 manufacturer=self._manufacturer_name,
                 serial_number=self._serial_number,
                 topic="factsheet",
+                interface_name=self._interface_name
             ),
             qos_profile=10,
         )
@@ -409,7 +477,7 @@ class VDA5050Controller(Node):
         """
         Update Order State.
 
-        Args
+        Args:
         ----
             partial_state (dict): Dictionary with field value pairs to update.
             publish_now (bool): True to publish, False otherwise (default False).
@@ -428,7 +496,7 @@ class VDA5050Controller(Node):
         """
         Create a list of NodeState objects from Order's nodes.
 
-        Args
+        Args:
         ----
             order (VDAOrder): VDA5050 Order message.
 
@@ -442,7 +510,7 @@ class VDA5050Controller(Node):
                 node_id=node.node_id,
                 sequence_id=node.sequence_id,
                 node_description=node.node_description,
-                position=node.node_position,
+                node_position=node.node_position,
                 released=node.released,
             )
             for node in order.nodes
@@ -452,7 +520,7 @@ class VDA5050Controller(Node):
         """
         Create a list of EdgeState objects from Order's edges.
 
-        Args
+        Args:
         ----
             order (VDAOrder): VDA5050 Order message.
 
@@ -478,7 +546,7 @@ class VDA5050Controller(Node):
 
         All CurrentAction objects are initialized with status WAITING.
 
-        Args
+        Args:
         ----
             order (VDAOrder): VDA5050 Order message.
 
@@ -499,6 +567,7 @@ class VDA5050Controller(Node):
         return [
             VDACurrentAction(
                 action_id=action.action_id,
+                action_type=action.action_type,
                 action_description=action.action_description,
                 action_status=VDACurrentAction.WAITING,
             )
@@ -514,7 +583,7 @@ class VDA5050Controller(Node):
         """
         Get the action status on the current state given action's ID.
 
-        Args
+        Args:
         ----
             action_id (str): Action ID.
 
@@ -539,11 +608,11 @@ class VDA5050Controller(Node):
         )
         return action_state.action_status
 
-    def _update_action_status(self, action_id: str, action_status: str):
+    def _update_action_status(self, action_id: str, action_status: str, result_description: str = ""):
         """
         Update action status on the current state given action's ID.
 
-        Args
+        Args:
         ----
             action_id (str): Action ID
             action_status (str): Action status
@@ -572,7 +641,7 @@ class VDA5050Controller(Node):
             )
             error = VDAError(
                 error_type=ActionErrors.ACTION_NOT_FOUND.value,
-                description=(
+                error_description=(
                     f"VDA5050 action with id {action_id} not found to update"
                     f" its state: {action_status}"
                 ),
@@ -587,8 +656,10 @@ class VDA5050Controller(Node):
             self._update_state({"errors": current_errors})
             return
 
-        # If found, update action status
+        # If found, update action status and result description
         action_state.action_status = action_status
+        if action_status == VDACurrentAction.FINISHED:
+            action_state.result_description = result_description
 
     # ---- Adapter's state ----
 
@@ -596,7 +667,7 @@ class VDA5050Controller(Node):
         """
         Request the adapter's state and updates the current state.
 
-        Args
+        Args:
         ----
             async_call (bool): True to perform an async call to the GetState service.
                 False for a sync call (default False).
@@ -618,14 +689,14 @@ class VDA5050Controller(Node):
         """
         Receive the async call future result, update the current state and publish it.
 
-        Args
+        Args:
         ----
             action (VDAAction): VDA action to update its status on async calls.
             future (Future): Service response future.
 
         """
         if action:
-            self._update_action_status(action.action_id, VDACurrentAction.FINISHED)
+            self._update_action_status(action.action_id, VDACurrentAction.FINISHED, action.result_description)
         self._update_state_from_adapter(future.result())
         self._publish_state()
 
@@ -633,7 +704,7 @@ class VDA5050Controller(Node):
         """
         Update current state and visualization msgs based on the adapter's state information.
 
-        Args
+        Args:
         ----
             order_state (VDAOrderState): Adapter's state to update robot specific information.
 
@@ -659,7 +730,8 @@ class VDA5050Controller(Node):
                 "distance_since_last_node": order_state.state.distance_since_last_node,
                 "battery_state": order_state.state.battery_state,
                 "errors": current_errors + order_state.state.errors,
-                "informations": order_state.state.informations
+                "informations": order_state.state.informations,
+                "operating_mode": order_state.state.operating_mode
             }
         )
 
@@ -672,9 +744,9 @@ class VDA5050Controller(Node):
         This is the instant_actions processing entrypoint. It decides how
         the instant_actions will be processed given current controller state.
 
-        Args
+        Args:
         ----
-            msg (VDAInstantActions): VDA5050 InstantActions message.
+            instant_actions (VDAInstantActions): VDA5050 InstantActions message.
 
         """
         msg_is_valid, error = self.instant_action_msg_is_valid(instant_actions)
@@ -693,12 +765,14 @@ class VDA5050Controller(Node):
                 f"Processing action '{action.action_id}' of type '{action.action_type}'"
             )
 
-            # Add action to action_states
+            # Add action to action_states and track it as an instant action
             action_state = VDACurrentAction(
                 action_id=action.action_id,
+                action_type=action.action_type,
                 action_description=action.action_description,
                 action_status=VDACurrentAction.WAITING,
             )
+            self._instant_action_ids.add(action.action_id)
             self._update_state(
                 {"action_states": self._current_state.action_states + [action_state]}
             )
@@ -723,7 +797,7 @@ class VDA5050Controller(Node):
         """
         Process if a given instant action msg is valid. If not, a proper VDAError is generated.
 
-        Args
+        Args:
         ----
             instant_actions (VDAInstantActions): Instant action msg to validate.
 
@@ -744,7 +818,7 @@ class VDA5050Controller(Node):
 
         If the action is being processed (not in WAITING), the function exits.
 
-        Args
+        Args:
         ----
             action (VDAAction): Action to be executed.
 
@@ -775,14 +849,14 @@ class VDA5050Controller(Node):
         """
         Response callback function for process VDA actions goal request.
 
-        Args
+        Args:
         ----
             action (VDAAction): VDA Action sent as goal.
             future (Future): Action response future.
 
         """
-        _goal_handle = future.result()
-        if not _goal_handle.accepted:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
             self._update_action_status(
                 action_id=action.action_id, action_status=VDACurrentAction.FAILED
             )
@@ -792,20 +866,20 @@ class VDA5050Controller(Node):
             )
             return
 
-        self._process_vda_action_goal_handle_dict[action.action_id] = _goal_handle
+        self._process_vda_action_goal_handle_dict[action.action_id] = goal_handle
         self.logger.info(
             f"VDA Action '{action.action_id}' of type '{action.action_type}'"
             " accepted by the adapter"
         )
 
-        _get_result_future = _goal_handle.get_result_async()
-        _get_result_future.add_done_callback(self._process_vda_action_result_callback)
+        get_result_future = goal_handle.get_result_async()
+        get_result_future.add_done_callback(self._process_vda_action_result_callback)
 
     def _process_vda_action_feedback_callback(self, feedback_msg: ProcessVDAAction.Feedback):
         """
         Feedback callback function for process VDA actions goal request.
 
-        Args
+        Args:
         ----
             feedback_msg (ProcessVDAAction.Feedback): ProcessVDAAction Action client feedback
             message.
@@ -818,15 +892,30 @@ class VDA5050Controller(Node):
         """
         Process VDA actions goal request.
 
-        Args
+        Args:
         ----
             future (Future): Action result future.
+
         """
         action_result: ProcessVDAAction.Result = future.result().result
         current_action: VDACurrentAction = action_result.result
         self._process_vda_action_goal_handle_dict.pop(current_action.action_id)
-        self._update_action_status(current_action.action_id, current_action.action_status)
+        self._update_action_status(current_action.action_id, current_action.action_status, current_action.result_description)
         self.logger.info(f"VDA Action finished. Result: {current_action}")
+
+        # Create an error entry for failed action
+        if current_action.action_status == VDACurrentAction.FAILED:
+            error = VDAError(
+                error_type=ActionErrors.ACTION_FAILED.value,
+                error_description=current_action.result_description,
+                error_level=VDAError.FATAL,
+                error_references=[
+                    VDAErrorReference(reference_key="action_id", reference_value=current_action.action_id)
+                ],
+            )
+            current_errors = self._current_state.errors
+            self._update_state({"errors": current_errors + [error]}, publish_now=True)
+            self._update_state({"errors": current_errors})
 
     # Order
 
@@ -839,9 +928,9 @@ class VDA5050Controller(Node):
 
         https://github.com/VDA5050/VDA5050/blob/development/assets/Figure8.png
 
-        Args
+        Args:
         ----
-            msg (VDAOrder): VDA5050 Order message.
+            order (VDAOrder): VDA5050 Order message.
 
         """
         self.logger.info(f"Received order with ID: '{order.order_id}'")
@@ -849,7 +938,12 @@ class VDA5050Controller(Node):
         # Validate order msg
         msg_is_valid, error = self.order_msg_is_valid(order)
         if not msg_is_valid:
-            self._reject_order(order, OrderRejectErrors.VALIDATION_ERROR, error.error_description)
+            self._reject_order(
+                order,
+                OrderRejectErrors.VALIDATION_ERROR,
+                error.error_description,
+                list(error.error_references),
+            )
             return
 
         accept_mode = None
@@ -878,7 +972,7 @@ class VDA5050Controller(Node):
         else:
             # Same order graph (Same order_id)
             update_id_diff = order.order_update_id - self._current_order.order_update_id
-            match_last_new_base_nodes = self._match_base_nodes(order)
+            match_last_new_base_nodes = self._match_stitch_nodes(order)
 
             if update_id_diff == 0:
                 # Same update id, discard the msg
@@ -888,7 +982,7 @@ class VDA5050Controller(Node):
                 # Reject if update id is lower or if last and new base nodes doesn't match
                 error_description = (
                     f"New base start node [{order.nodes[0].node_id}] doesn't match with old base"
-                    f" last node [{self._current_order.nodes[0].node_id}]"
+                    f" last node [{self._current_order.nodes[-1].node_id}]"
                     if not match_last_new_base_nodes
                     else (
                         f"New update id {order.order_update_id} lower than old update id"
@@ -920,7 +1014,23 @@ class VDA5050Controller(Node):
             True if msg is valid, False otherwise, VDAError if msg in invalid.
 
         """
-        # TODO: Proper implementation
+        # Only the map check (6.7.1) is implemented; disabled when known_map_ids is empty.
+        if self._known_map_ids:
+            for node in order.nodes:
+                map_id = node.node_position.map_id
+                if map_id and map_id not in self._known_map_ids:
+                    return False, VDAError(
+                        error_type=OrderRejectErrors.VALIDATION_ERROR.value,
+                        error_description=(
+                            f"order {order.order_id}: unknown map '{map_id}'"
+                            f" (node '{node.node_id}')"
+                        ),
+                        error_level=VDAError.WARNING,
+                        error_references=[
+                            VDAErrorReference(reference_key="node_id", reference_value=node.node_id),
+                            VDAErrorReference(reference_key="map_id", reference_value=map_id),
+                        ],
+                    )
         return True, VDAError()
 
     def _has_current_order(self) -> bool:
@@ -938,30 +1048,58 @@ class VDA5050Controller(Node):
         action_id_cancel = -1
         if self._canceling_order():
             action_id_cancel = self._cancel_action.action_id
+
         has_running_actions = any(
             [
                 action_state.action_status
                 not in [VDACurrentAction.FINISHED, VDACurrentAction.FAILED]
                 for action_state in self._current_state.action_states
                 if action_state.action_id != action_id_cancel
+                and action_state.action_id not in self._instant_action_ids
             ]
         )
+
         # If there are no actions, but there are node / edge states, there is an active order
-        return has_running_actions or (
+        has_nodes_and_edges = (
             len(self._current_state.node_states) and len(self._current_state.edge_states)
         )
+
+        if has_nodes_and_edges:
+            self.logger.debug((
+                "Found nodes and edges while validating if there's an active order."
+                f" Nodes: {self._current_state.node_states}."
+                f" Edges: {self._current_state.edge_states}."
+            ), throttle_duration_sec=5)
+
+        if has_running_actions:
+            running_actions = [
+                action_state
+                for action_state in self._current_state.action_states
+                if action_state.action_id != action_id_cancel and
+                action_state.action_id not in self._instant_action_ids and
+                action_state.action_status not in [
+                    VDACurrentAction.FINISHED, VDACurrentAction.FAILED
+                ]
+            ]
+            self.logger.debug((
+                "Found running actions while validating if there's an active order."
+                f" Actions: {running_actions}"
+            ), throttle_duration_sec=5)
+
+        return has_running_actions or has_nodes_and_edges
 
     def _first_node_in_deviation_range(self, order: VDAOrder) -> bool:
         """
         Validate if first node is in deviation range.
 
-        Args
+        Args:
         ----
             order (VDAOrder): New order to validate first node.
 
-        Return
+        Return:
         ------
             True if first node is in deviation range, False otherwise.
+
         """
         # TODO: Proper implementation
         # first_node = order.nodes[0]
@@ -973,7 +1111,7 @@ class VDA5050Controller(Node):
         # deviation of theta
         return True
 
-    def _match_base_nodes(self, order: VDAOrder):
+    def _match_stitch_nodes(self, order: VDAOrder):
         """
         Validate if the last node from the old base matches the first node on the new base.
 
@@ -986,8 +1124,96 @@ class VDA5050Controller(Node):
             True if last <> first base nodes match, False otherwise.
 
         """
-        # TODO: Proper implementation
-        return True
+        base_order_nodes = [
+            node for node in self._current_order.nodes if node.released
+        ]
+        if not base_order_nodes:
+            self.logger.error("Error while validating stitch node: current order does not have any node.")
+            return False
+        last_node = base_order_nodes[-1]
+        stitch_node = order.nodes[0]
+
+        # Return False if node actions differ
+        if len(last_node.actions) != len(stitch_node.actions):
+            self.logger.error("Error while validating stitch node: number of actions don't match")
+            return False
+
+        # Evaluate all actions are equal and in the same order
+        for last_node_actions, stitch_node_actions in zip(last_node.actions, stitch_node.actions):
+            # Return False if action_type, action_id, blocking_type or action_description
+            # of an action are not the same
+            if (
+                last_node_actions.action_type != stitch_node_actions.action_type or
+                last_node_actions.action_id != stitch_node_actions.action_id or
+                last_node_actions.blocking_type != stitch_node_actions.blocking_type or
+                last_node_actions.action_description != stitch_node_actions.action_description
+            ):
+                self.logger.error((
+                    "Error while validating stitch node: actions don't match."
+                    f" action on last node '{last_node_actions}' differs from "
+                    f" action on stitch node '{stitch_node_actions}'"
+                ))
+                return False
+
+            # If the action has different number of parameter return False
+            if (len(last_node_actions.action_parameters) !=
+                    len(stitch_node_actions.action_parameters)):
+                self.logger.error((
+                    "Error while validating stitch node: Number"
+                    " of parameters on node actions differ"
+                ))
+                return False
+
+            # If any of the parameters of an action are not the same return False
+            if any([
+                last_node_action_action_parameter != stitch_node_action_action_parameter
+                for last_node_action_action_parameter, stitch_node_action_action_parameter
+                in zip(last_node_actions.action_parameters, stitch_node_actions.action_parameters)
+            ]):
+                self.logger.error((
+                    "Error while validating stitch node: Parameters"
+                    " on one of the node actions differ."
+                    f" Last node action parameters: '{last_node_actions.action_parameters}'"
+                    f" Stitch node action parameters: '{stitch_node_actions.action_parameters}'"
+                ))
+                return False
+
+        # Calculate if node_id and sequence_id matches
+        has_same_node_id = last_node.node_id == stitch_node.node_id
+        has_same_sequence_id = last_node.sequence_id == stitch_node.sequence_id
+
+        if not has_same_node_id or not has_same_sequence_id:
+            self.logger.error(
+                ("Error while validating stitch node: Node ID or Sequence ID mismatch")
+            )
+        # Calculate if both nodes positions are the same
+        last_node_position = last_node.node_position
+        stitch_node_position = stitch_node.node_position
+
+        has_same_node_position = (
+            last_node_position.x == stitch_node_position.x
+            and last_node_position.y == stitch_node_position.y
+            # theta is optional: NaN means "not given", and NaN != NaN
+            and (last_node_position.theta == stitch_node_position.theta
+                 or (math.isnan(last_node_position.theta)
+                     and math.isnan(stitch_node_position.theta)))
+            and (last_node_position.allowed_deviation_x_y ==
+                 stitch_node_position.allowed_deviation_x_y)
+            and (last_node_position.allowed_deviation_theta ==
+                 stitch_node_position.allowed_deviation_theta)
+            and last_node_position.map_id == stitch_node_position.map_id
+            and last_node_position.map_description == stitch_node_position.map_description
+        )
+
+        if not has_same_node_position:
+            self.logger.error((
+                "Error while validating stitch node: Node position mismatch."
+                f" Last node position '{last_node_position}'."
+                f" Stitch node position '{stitch_node_position}'."
+            ))
+
+        # Return True if both nodes have same id, sequence_id and position
+        return has_same_node_id and has_same_sequence_id and has_same_node_position
 
     def _accept_order(self, order: VDAOrder, mode: OrderAcceptModes):
         """
@@ -995,13 +1221,14 @@ class VDA5050Controller(Node):
 
         https://github.com/VDA5050/VDA5050/blob/development/assets/Figure8.png
 
-        Args
+        Args:
         ----
             order (VDAOrder): Valid order to process.
             mode (OrderAcceptModes): There are 3 different ways of accepting an order:
                 NEW: the order is different from current order i.e. order_id != current_order_id.
                 UPDATE: when the order's horizon is updated.
                 STITCH: order's base is extended. It may include a new horizon.
+
         """
         self.logger.info(
             f"Order '{order.order_id}' with update id '{order.order_update_id}' accepted!"
@@ -1013,10 +1240,10 @@ class VDA5050Controller(Node):
 
             # Clear horizon on current state
             # Avoid copying the stitching node twice
-            self._current_state.nodes_states = [
+            self._current_state.node_states = [
                 node_state
                 for node_state in self._current_state.node_states
-                if node_state.released and node_state.sequenceId != order.nodes[0].sequenceId
+                if node_state.released and node_state.sequence_id != order.nodes[0].sequence_id
             ]
             self._current_state.edge_states = [
                 edge_state for edge_state in self._current_state.edge_states if edge_state.released
@@ -1026,10 +1253,10 @@ class VDA5050Controller(Node):
             # Avoid copying the stitching node twice
             base_order_nodes = [
                 node
-                for node in order.nodes
-                if node.released and node.sequenceId != order.nodes[0].sequenceId
+                for node in self._current_order.nodes
+                if node.released and node.sequence_id != order.nodes[0].sequence_id
             ]
-            base_order_edges = [edge for edge in order.edges if edge.released]
+            base_order_edges = [edge for edge in self._current_order.edges if edge.released]
 
             self._current_order.order_update_id = order.order_update_id
             self._current_order.zone_set_id = order.zone_set_id
@@ -1053,19 +1280,42 @@ class VDA5050Controller(Node):
         ]
 
         # Update state
-        # Only on stitching updates the node and edges base states are kept
+        # On stitching updates, keep existing base node_states and append the new ones,
+        # then drop any that the robot has already visited.
+        # Dedup by sequence_id (order's version wins on conflict).
+        if mode == OrderAcceptModes.STITCH:
+            merged = {
+                ns.sequence_id: ns
+                for ns in (self._current_state.node_states + self._get_node_states(order))
+            }
+            node_states = [
+                ns for ns in merged.values()
+                if ns.sequence_id > self._current_state.last_node_sequence_id
+            ]
+            # Keep current action statuses (possibly FINISHED/RUNNING) and
+            # append only actions that are not already tracked.
+            existing_action_ids = {
+                a.action_id for a in self._current_state.action_states
+            }
+            new_action_states = [
+                a for a in self._get_action_states(order)
+                if a.action_id not in existing_action_ids
+            ]
+            action_states = self._current_state.action_states + new_action_states
+        else:
+            node_states = self._get_node_states(order)
+            action_states = self._get_action_states(order)
+
         self._update_state(
             {
                 "order_id": order.order_id,
                 "order_update_id": order.order_update_id,
                 "errors": errors,
-                "node_states": (mode == OrderAcceptModes.STITCH) * self._current_state.node_states
-                + self._get_node_states(order),
+                "node_states": node_states,
                 "edge_states": (mode == OrderAcceptModes.STITCH) * self._current_state.edge_states
                 + self._get_edge_states(order),
-                "action_states": self._current_state.action_states
-                + self._get_action_states(order),
-                "new_base_requested": False,
+                "action_states": action_states,
+                "new_base_request": False,
             }
         )
 
@@ -1074,25 +1324,87 @@ class VDA5050Controller(Node):
             # Note: the standard assumes the robot is at the first node of the order.
             # Otherwise, the order gets rejected and this method is not called.
             self._process_node(self._current_order.nodes[0])
+        elif self._enable_nav_through_nodes and self._is_navigation_active():
+            # Extend the in-flight navigation goal with the newly released
+            # segment beyond the goal's end node, following the same rules as
+            # _get_drivable_segment so the robot still stops on SOFT/HARD
+            # actions (§6.2.2).
+            goal_end_seq = self._nav_through_nodes_last_seq
+            goal_end_node = next(
+                (n for n in self._current_order.nodes if n.sequence_id == goal_end_seq), None
+            )
+            goal_end_edge = next(
+                (e for e in self._current_order.edges if e.sequence_id == goal_end_seq - 1), None
+            )
+            if goal_end_node is None:
+                self.logger.warn(
+                    f"Stitch while navigating: goal end node seq {goal_end_seq} not found"
+                    " in order, not extending.")
+                return
+            if (self._check_hard_soft_actions(goal_end_node.actions)
+                    or (goal_end_edge is not None
+                        and self._check_hard_soft_actions(goal_end_edge.actions))):
+                self.logger.info(
+                    f"Stitch while navigating: goal ends on blocking node seq {goal_end_seq},"
+                    " not extending.")
+                return
 
-    def _reject_order(self, order: VDAOrder, error: OrderRejectErrors, description: str = ""):
+            new_edges, new_nodes = self._get_drivable_segment(after_seq=goal_end_seq)
+
+            self.logger.info(
+                f"Stitch while navigating: {len(new_edges)} new edges,"
+                f" {len(new_nodes)} new nodes beyond seq {goal_end_seq}")
+
+            if new_edges and new_nodes:
+                # Build the ExtendNavigation request.  req.nodes[0] is the
+                # goal's end node — the last node the handler already knows
+                # about. The handler uses it to verify that the extension
+                # connects to its current path endpoint before appending
+                # req.nodes[1:] and req.edges.
+                if self._extend_nav_svc_cli.service_is_ready():
+                    req = ExtendNavigation.Request()
+                    req.edges = new_edges
+                    req.nodes = [goal_end_node] + new_nodes
+                    future = self._extend_nav_svc_cli.call_async(req)
+                    future.add_done_callback(
+                        functools.partial(
+                            self._extend_navigation_response_callback,
+                            new_nodes[-1].sequence_id
+                        )
+                    )
+                else:
+                    self.logger.warn(
+                        "ExtendNavigation service unavailable; keeping in-flight goal "
+                        "unchanged and falling back to post-goal dispatch."
+                    )
+
+
+    def _reject_order(
+        self,
+        order: VDAOrder,
+        error: OrderRejectErrors,
+        description: str = "",
+        references: list = None,
+    ):
         """
         Reject order.
 
-        Args
+        Args:
         ----
             order (VDAOrder): Order sent
             error (OrderRejectErrors): Errors
                 VALIDATION_ERROR
                 ORDER_UPDATE_ERROR
                 NO_ROUTE_ERROR
+            description (str): Order rejection description
+            references (list): Extra VDAErrorReference entries
 
         """
-        error_references = []
+        error_references = list(references or [])
         if error == OrderRejectErrors.ORDER_UPDATE_ERROR:
             # On orderUpdateError send orderUpdateId and orderId as reference
 
-            # TODO: Question: camelCase or snakeCase (order_id or orderId)
+            # reference_key value is snake_case for ROS2; camelCase conversion for MQTT is done in mqtt_bridge
             error_references.append(
                 VDAErrorReference(reference_key="order_id", reference_value=order.order_id)
             )
@@ -1111,7 +1423,7 @@ class VDA5050Controller(Node):
         order_error.error_type = error.value
         order_error.error_description = (
             f"VDA5050 order {order.order_id} with update ID"
-            f" {order.order_update_id} rejected [{description}]."
+            f" {order.order_update_id} rejected. Reason: {description}"
         )
         order_error.error_level = VDAError.WARNING
         order_error.error_references = error_references
@@ -1122,6 +1434,11 @@ class VDA5050Controller(Node):
         self._update_state(
             {"errors": self._current_state.errors + [order_error]}, publish_now=True
         )
+
+    def _report_undecodable_order(self, error: VDAError):
+        """Add an order error published by the bridge to the state errors."""
+        self.logger.warn(error.error_description)
+        self._update_state({"errors": self._current_state.errors + [error]}, publish_now=True)
 
     def _cancel_order(self):
         """
@@ -1174,17 +1491,39 @@ class VDA5050Controller(Node):
 
         # Interrupt any running navigation goal
         if self._is_navigation_active():
-            self._navigate_to_node_goal_handle.cancel_goal_async()
+            if self._enable_nav_through_nodes:
+                if self._navigate_through_nodes_goal_handle is not None:
+                    self._navigate_through_nodes_goal_handle.cancel_goal_async()
+                else:
+                    self.logger.info(
+                        "cancelOrder requested while nav-through-nodes goal is pending acceptance;"
+                        " cancel will be sent once accepted."
+                    )
+            else:
+                self._navigate_to_node_goal_handle.cancel_goal_async()
             return
+
+        # Delete remaining node / edge states / clear errors related to the order
+        errors = [
+            error
+            for error in self._current_state.errors
+            if error.error_type not in [e.value for e in OrderRejectErrors]
+        ]
 
         # Once all the VDA actions and navigation goal requests have finished,
         # the cancel order will be mark as finished
-
-        # Delete remaining node / edge states
-        self._update_state({"new_base_requested": False, "node_states": [], "edge_states": []})
+        self._update_state(
+            {
+                "errors": errors,
+                "new_base_request": False,
+                "node_states": [],
+                "edge_states": [],
+            }
+        )
         self._update_action_status(self._cancel_action.action_id, VDACurrentAction.FINISHED)
         self._current_order = VDAOrder(order_id="-1")
         self._cancel_action = None
+        self._current_node_goal = None
         self._current_node_actions = []
 
         self.logger.info("Finished executing cancelOrder.")
@@ -1218,18 +1557,27 @@ class VDA5050Controller(Node):
         if not self._has_current_order():
             return
 
-        if len(self._current_node_actions) > 0:
-            self._execute_node_actions()
+        # Do not retry navigation while any FATAL error is active.
+        # WARNING-level errors (e.g. rejected order updates) must not
+        # freeze an otherwise valid in-flight order.
+        if any(error.error_level == VDAError.FATAL for error in self._current_state.errors):
             return
 
+        if len(self._current_node_actions) > 0:
+            self._execute_node_actions()
+            # Only SOFT/HARD actions keep the robot stopped (6.2.2); driving may
+            # resume alongside the remaining NONE actions.
+            if self._check_hard_soft_actions(self._current_node_actions):
+                return
+
         if not self._is_navigation_active():
-            self._process_next_edge()
+            self._process_next_navigation()
 
     def _process_node(self, node: VDANode):
         """
         Process VDA5050 order's node when the robot reaches a given goal.
 
-        Args
+        Args:
         ----
             node (VDANode): Order's node.
 
@@ -1245,7 +1593,8 @@ class VDA5050Controller(Node):
                 ],
                 "last_node_id": node.node_id,
                 "last_node_sequence_id": node.sequence_id,
-            }
+            },
+            publish_now=True,
         )
 
         self._current_node_actions = node.actions
@@ -1257,6 +1606,7 @@ class VDA5050Controller(Node):
             self.logger.info(
                 f"Processing last order's node. Order {self._current_order.order_id} finished."
             )
+        self._current_node_goal = None
 
     def _execute_node_actions(self):
         """
@@ -1297,38 +1647,137 @@ class VDA5050Controller(Node):
         for action in execution_list["soft"] + execution_list["none"]:
             self.send_adapter_process_vda_action(action)
 
-    def _process_next_edge(self):
-        """Process VDA5050 order's edge."""
-        # Get next edge to be processed by looking for an edge
-        # with sequence_id equal to last_node_sequence_id + 1.
-        try:
-            next_edge = next(
-                edge
-                for edge in self._current_order.edges
-                if edge.sequence_id == self._current_state.last_node_sequence_id + 1
-            )
-        except StopIteration:
+    def _check_hard_soft_actions(self, action_list):
+        """
+        Check a list of actions for HARD or SOFT actions.
+
+        Returns
+        -------
+        True if an action in the list is HARD or SOFT blocking
+
+        """
+        hard_soft_action_found = False
+        for action in action_list:
+            if action.blocking_type == VDAAction.HARD or \
+               action.blocking_type == VDAAction.SOFT:
+                hard_soft_action_found = True
+                break
+        return hard_soft_action_found
+
+    def _get_drivable_segment(self, after_seq=None):
+        """
+        Return the contiguous released edge-node pairs for one navigation goal.
+
+        VDA5050 §6.1.1 defines that edges and nodes share a sequenceId space
+        (Node0, Edge1, Node2, Edge3, …) and that the number of edges equals the
+        number of nodes minus one.  Each edge with sequenceId S connects the
+        node at S-1 to the node at S+1, so they must always be treated as
+        pairs to keep the segment consistent.
+
+        The segment stops when:
+        - a non-released edge or its destination node is encountered,
+        - there are no more edges/nodes,
+        - a HARD or SOFT blocking action is found on an edge or its
+          destination node (§6.2.2 — the robot must stop driving to
+          execute the action; the pair is still included).
+
+        If the very next edge is not released the ``new_base_request`` flag
+        is set so that fleet control can extend the base (§6.6.3).
+
+        Args:
+        ----
+            after_seq (int): Node sequence_id the segment starts from.
+                Defaults to the last reached node; when given, the
+                ``new_base_request`` flag is left untouched.
+
+        Returns
+        -------
+        tuple[list[VDAEdge], list[VDANode]]
+            Matched lists where ``len(edges) == len(nodes)``.  Each
+            ``edges[i]`` leads to ``nodes[i]``.
+
+        """
+        request_base = after_seq is None
+        if after_seq is None:
+            after_seq = self._current_state.last_node_sequence_id
+
+        released_edges = []
+        released_nodes = []
+
+        # Build a lookup of nodes by sequenceId for O(1) pairing.
+        nodes_by_seq = {
+            n.sequence_id: n for n in self._current_order.nodes
+        }
+
+        for edge in self._current_order.edges:
+            if edge.sequence_id < after_seq + 1:
+                continue
+
+            if not edge.released:
+                if request_base and len(released_edges) == 0:
+                    # Next edge is part of the horizon — request a base
+                    # extension (§6.6.3).
+                    if not self._current_state.new_base_request:
+                        self.logger.warn(
+                            "Next edge is part of the horizon. "
+                            "Stopping traversing of nodes."
+                        )
+                        self._update_state(
+                            {"new_base_request": True}, publish_now=True
+                        )
+                break
+
+            # Destination node sits at edge.sequence_id + 1 (§6.1.1).
+            dest_node = nodes_by_seq.get(edge.sequence_id + 1)
+            if dest_node is None or not dest_node.released:
+                break
+
+            released_edges.append(edge)
+            released_nodes.append(dest_node)
+
+            # Stop the segment on whichever HARD/SOFT comes first — the
+            # edge action or the destination-node action (§6.2.2).
+            if (self._check_hard_soft_actions(edge.actions)
+                    or self._check_hard_soft_actions(dest_node.actions)):
+                break
+
+        return released_edges, released_nodes
+
+    def _process_next_navigation(self):
+        """
+        Process VDA5050 order's edges and nodes.
+
+        The edges and nodes are checked to see if they're released.
+        Multiple released nodes/edges are sent to the navigate through nodes actions.
+        Any node/edge actions that are hard or soft will be the end of a single navigate.
+        """
+        released_edges, released_nodes = self._get_drivable_segment()
+        if len(released_edges) == 0:
             # This only happens when there is no order or it has finished,
             # but there is an active instant action running.
             # In this case, just exit.
             return
 
-        if not next_edge.released:
-            if not self._current_state.new_base_requested:
-                self.logger.warn("Next edge is part of the horizon. Stopping traversing of nodes.")
-                self._update_state({"new_base_requested": True}, publish_now=True)
-            return
+        next_edge = released_edges[0]
+        next_node = released_nodes[0]
 
-        # After a released edge there is always a released node.
-        # Otherwise, the order gets rejected and this method is never called.
-        next_node = next(
-            node
-            for node in self._current_order.nodes
-            if node.sequence_id == self._current_state.last_node_sequence_id + 2
-        )
-        self.logger.info(f"Processing node: {next_node}")
-
-        self.send_adapter_navigate_to_node(edge=next_edge, node=next_node)
+        if next_node != self._current_node_goal:
+            if self._enable_nav_through_nodes:
+                # Use nav through nodes for all navigation when enabled
+                self.logger.info(
+                    f"Processing nodes {released_nodes[0].node_id}"
+                    f" (seq {released_nodes[0].sequence_id})"
+                    f" to {released_nodes[-1].node_id}"
+                    f" (seq {released_nodes[-1].sequence_id})")
+                self.send_adapter_navigate_through_nodes(
+                    edges=released_edges, nodes=released_nodes)
+            else:
+                # Otherwise we can just use the single node navigation methods
+                self.logger.info(f"Processing node: {next_node}")
+                self.send_adapter_navigate_to_node(edge=next_edge, node=next_node)
+        else:
+            self.logger.error(
+                f"{next_node} Already current goal", throttle_duration_sec=5)
 
     # ---- Navigate to node: send goals ----
 
@@ -1336,7 +1785,7 @@ class VDA5050Controller(Node):
         """
         Send navigation goal to the VDA5050 adapter.
 
-        Args
+        Args:
         ----
             edge (VDAEdge): Order's edge to traverse.
             node (VDANode): Order edge ending node.
@@ -1352,16 +1801,17 @@ class VDA5050Controller(Node):
 
         # Send goal to action server
         self.logger.info("Navigate to node goal request sent.")
-        _send_goal_future = self._navigate_to_node_act_cli.send_goal_async(goal_msg)
+        self._current_node_goal = node
+        send_goal_future = self._navigate_to_node_act_cli.send_goal_async(goal_msg)
 
         # Register callback to be executed when the goal is accepted
-        _send_goal_future.add_done_callback(self._navigate_to_node_goal_response_callback)
+        send_goal_future.add_done_callback(self._navigate_to_node_goal_response_callback)
 
     def _navigate_to_node_goal_response_callback(self, future: Future):
         """
         Response callback function for navigate to node goal request.
 
-        Args
+        Args:
         ----
             future (Future): Action response future.
 
@@ -1370,14 +1820,15 @@ class VDA5050Controller(Node):
         if not self._navigate_to_node_goal_handle.accepted:
             self.logger.error("Navigate to node goal request rejected by adapter. Trying again.")
             self._navigate_to_node_goal_handle = None
+            self._current_node_goal = None
             return
 
         self.logger.info("Navigate to node goal request accepted by adapter.")
         # TODO: Execute edge actions
 
         # Add callback to handle action result
-        _get_result_future = self._navigate_to_node_goal_handle.get_result_async()
-        _get_result_future.add_done_callback(self._navigate_to_node_result_callback)
+        get_result_future = self._navigate_to_node_goal_handle.get_result_async()
+        get_result_future.add_done_callback(self._navigate_to_node_result_callback)
 
     def _navigate_to_node_result_callback(self, future: Future):
         """
@@ -1385,20 +1836,55 @@ class VDA5050Controller(Node):
 
         This callback is in charge of triggering next order's node execution.
 
-        Args
+        Args:
         ----
             future (Future): Action result future.
 
         """
-        # TODO: Check when the goal fails
         self._navigate_to_node_goal_handle = None
-        result = future.result().result
-        self.logger.info(f"Navigate to node result: {result}.")
 
         # When the order is cancelled, this callback should avoid continuing its logic
         if self._canceling_order():
             return
 
+        # Check if goal failed
+        status = future.result().status
+        if status == GoalStatus.STATUS_ABORTED:
+            self._handle_navigation_failure()
+            return
+
+        # Guard: the edge/node may have already been consumed (e.g. by a
+        # duplicate dispatch race between _process_next_navigation and
+        # _on_active_order).
+        released_edges, _ = self._get_drivable_segment()
+        if len(released_edges) == 0:
+            return
+
+        self._process_last_edge_node()
+
+    def _handle_navigation_failure(self):
+        """Report a navigation failure."""
+        self.logger.info("Failed to reach goal. Order aborted.")
+
+        error = VDAError()
+        error.error_type = OrderRejectErrors.NO_ROUTE_ERROR.value
+        error.error_description = "Failed to reach current node."
+        error.error_level = VDAError.FATAL
+        error.error_references = [
+            VDAErrorReference(
+                reference_key="node_id",
+                reference_value=self._current_node_goal.node_id
+                if self._current_node_goal
+                else "unknown",
+            )
+        ]
+
+        current_errors = self._current_state.errors
+        self._update_state({"errors": current_errors + [error]}, publish_now=True)
+        self._current_node_goal = None
+
+    def _process_last_edge_node(self):
+        """Update the states with the last nodes and edges that were reported."""
         last_edge = next(
             edge
             for edge in self._current_order.edges
@@ -1424,6 +1910,144 @@ class VDA5050Controller(Node):
         )
         self._process_node(node=last_node)
 
+    def send_adapter_navigate_through_nodes(self, edges: list[VDAEdge], nodes: list[VDANode]):
+        """
+        Send navigation goal to the VDA5050 adapter.
+
+        Args:
+        ----
+            edges (VDAEdge): Order's list edge to traverse.
+            nodes (VDANode): Order list edge ending node.
+
+        """
+        # Create goal message with edge and node parameters
+        goal_msg = NavigateThroughNodes.Goal()
+        goal_msg.edges = edges
+        goal_msg.nodes = nodes
+
+        # Wait for NavigateThroughNodes action server to be ready
+        self._navigate_through_nodes_act_cli.wait_for_server()
+
+        # Send goal to action server
+        self.logger.info(
+            f"Navigate through nodes goal request sent with {len(nodes)} nodes"
+            f" and {len(edges)} edges.")
+        self._current_node_goal = nodes[0]
+        self._nav_through_nodes_last_seq = nodes[-1].sequence_id
+        self._nav_through_nodes_goal_pending = True
+        send_goal_future = self._navigate_through_nodes_act_cli.send_goal_async(
+            goal_msg, feedback_callback=self._navigate_through_nodes_feedback_callback)
+
+        # Register callback to be executed when the goal is accepted
+        send_goal_future.add_done_callback(self._navigate_through_nodes_goal_response_callback)
+
+    def _navigate_through_nodes_goal_response_callback(self, future: Future):
+        """Response callback function for navigate through nodes goal request."""
+        self._nav_through_nodes_goal_pending = False
+        self._navigate_through_nodes_goal_handle = future.result()
+        if not self._navigate_through_nodes_goal_handle.accepted:
+            self.logger.error("Navigate through nodes goal request rejected by adapter. Trying again.")
+            self._navigate_through_nodes_goal_handle = None
+            self._current_node_goal = None
+            return
+
+        self.logger.info("Navigate through nodes goal request accepted by adapter.")
+
+        if self._canceling_order():
+            self.logger.info(
+                "Cancel requested while waiting for nav-through-nodes goal acceptance; "
+                "canceling accepted goal now."
+            )
+            self._navigate_through_nodes_goal_handle.cancel_goal_async()
+
+        get_result_future = self._navigate_through_nodes_goal_handle.get_result_async()
+        get_result_future.add_done_callback(self._navigate_through_nodes_result_callback)
+
+    def _navigate_through_nodes_result_callback(self, future: Future):
+        """
+        Handle the terminal result for a NavigateThroughNodes action goal.
+
+        This callback fires exactly once per action goal — when the handler
+        reports that the entire goal (including any in-flight extensions via
+        ExtendNavigation) has completed or been aborted.
+
+        During path stitching, the handler extends the *same* goal in-flight
+        rather than completing it early, so this callback is NOT triggered by
+        the stitch itself.  ``_nav_through_nodes_last_seq`` is updated by
+        ``_extend_navigation_response_callback`` to reflect the latest
+        sequence_id the goal covers, ensuring the while-loop below consumes
+        exactly the right set of nodes.
+
+        After consuming all nodes up to ``_nav_through_nodes_last_seq``, any
+        remaining released edges (e.g. from a stitch that arrived after the
+        goal's extension window) are dispatched as a new navigation goal.
+        """
+        self._navigate_through_nodes_goal_handle = None
+
+        # When the order is cancelled, this callback should avoid continuing its logic
+        if self._canceling_order():
+            self._current_node_goal = None
+            return
+
+        # Check if goal failed
+        status = future.result().status
+        if status == GoalStatus.STATUS_ABORTED:
+            self._handle_navigation_failure()
+            return
+
+        # Consume only the nodes/edges that were part of this goal.
+        # A stitch may have added new released edges since the goal was sent;
+        # those must NOT be consumed here.
+        while (
+            self._current_state.last_node_sequence_id < self._nav_through_nodes_last_seq
+        ):
+            self._process_last_edge_node()
+
+        self._current_node_goal = None
+
+        # If there are still released edges (e.g. from a stitch), dispatch
+        # new navigation. A pending SOFT/HARD action on the reached node keeps
+        # the robot stopped (6.2.2); navigation is then resumed by
+        # _on_active_order once no blocking action is left.
+        released_edges, _ = self._get_drivable_segment()
+        if len(released_edges) > 0 and not self._check_hard_soft_actions(
+            self._current_node_actions
+        ):
+            self._process_next_navigation()
+
+    def _navigate_through_nodes_feedback_callback(self, feedback_msg):
+        """
+        Process the feedback message from the navigate_through_nodes actions.
+
+        Checks to see if the last node reported is equal to of greater than the current node goal,
+        Updates the states if it detects a change.
+
+        Args:
+        ----
+            feedback_msg : ROS2 Action Feedback object.
+
+        """
+        if self._current_node_goal is None or self._canceling_order():
+            return
+
+        reported_seq = feedback_msg.feedback.last_node.sequence_id
+        if reported_seq >= self._current_node_goal.sequence_id:
+            # Process ALL nodes up to and including the reported one.
+            # The handler may report a node several positions ahead (e.g.
+            # when receding detection fires or intermediate nodes were
+            # skipped), so a single _process_last_edge_node() is not enough.
+            while self._current_state.last_node_sequence_id < reported_seq:
+                self._process_last_edge_node()
+
+            _, released_nodes = self._get_drivable_segment()
+            # Released nodes beyond the current goal's end are not being driven to yet; they become
+            # the target once an extension is confirmed or a new goal is dispatched.
+            if (not released_nodes
+                    or released_nodes[0].sequence_id > self._nav_through_nodes_last_seq):
+                self._current_node_goal = None
+                return
+            self._current_node_goal = released_nodes[0]
+
     def _is_navigation_active(self) -> bool:
         """
         Indicate if the robot was commanded to navigate to a node.
@@ -1433,7 +2057,28 @@ class VDA5050Controller(Node):
             True if robot is navigating to node, False otherwise.
 
         """
+        if self._enable_nav_through_nodes:
+            return (self._navigate_through_nodes_goal_handle is not None
+                    or self._nav_through_nodes_goal_pending)
         return self._navigate_to_node_goal_handle is not None
+
+    def _extend_navigation_response_callback(self, last_seq: int, future: Future):
+        """Handle the response from the extend_navigation service."""
+        result = future.result()
+        if result.success:
+            self._nav_through_nodes_last_seq = last_seq
+            self.logger.info(
+                f"Navigation extended in-flight up to seq {last_seq}")
+            # Restores the navigation target when the robot reached the old goal end before this
+            # response: feedback then cleared it, and without a target node arrivals are ignored.
+            if self._current_node_goal is None and self._is_navigation_active():
+                _, released_nodes = self._get_drivable_segment()
+                if released_nodes and released_nodes[0].sequence_id <= last_seq:
+                    self._current_node_goal = released_nodes[0]
+        else:
+            self.logger.warn(
+                f"Could not extend navigation: {result.message}. "
+                "Will dispatch new goal when current finishes.")
 
     # Factsheet
 

@@ -133,7 +133,7 @@ class MassRoboticsAMRInteropNode(Node):
                 loop.run_until_complete(
                     self._async_send_report(self.mass_status_report)
                 )
-                self.logger.debug(f"Status report sent. Waiting ...")
+                self.logger.debug("Status report sent. Waiting ...")
                 sleep(STATUS_REPORT_INTERVAL)
 
         loop.create_task(send_status())
@@ -182,7 +182,7 @@ class MassRoboticsAMRInteropNode(Node):
             mass_object (:obj:`MassObject`): Identity or Status report
 
         """
-        self.logger.debug(f"Validating schema MassRobotics object schema")
+        self.logger.debug("Validating schema MassRobotics object schema")
         try:
             mass_object.validate_schema()
         except jsonschema_exc.ValidationError as ex:
@@ -282,7 +282,7 @@ class MassRoboticsAMRInteropNode(Node):
             x=twist.linear.x, y=twist.linear.y, z=twist.linear.z
         ).Norm()
         quat = PyKDL.Rotation.EulerZYX(
-            Alfa=twist.angular.z, Beta=twist.angular.y, Gamma=twist.angular.x
+            twist.angular.z, twist.angular.y, twist.angular.x
         ).GetQuaternion()
 
         self.mass_status_report.data[param_name] = {

@@ -37,16 +37,19 @@ find_package(vda5050_msgs REQUIRED)
 # BUILD
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/NavigateThroughNodes.action"
   "action/NavigateToNode.action"
   "action/ProcessVDAAction.action"
+  "srv/ExtendNavigation.srv"
   "srv/GetState.srv"
   "srv/SupportedActions.srv"
   DEPENDENCIES vda5050_msgs
+  tf2
   ADD_LINTER_TESTS
 )
 
 ## EXECUTABLES
-add_library(${library_adapter} src/adapter.cpp src/utils.cpp)
+add_library(${library_adapter} src/adapter.cpp src/nav_through_nodes.cpp src/utils.cpp)
 target_compile_features(${library_adapter} PUBLIC cxx_std_17)  # Require C++17
 target_include_directories(${library_adapter} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -54,9 +57,10 @@ target_include_directories(${library_adapter} PUBLIC
 ament_target_dependencies(${library_adapter}
   ${cpp_dependencies}
   ${msg_dependencies}
+  tf2
 )
-rosidl_target_interfaces(${library_adapter}
-  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
+target_link_libraries(${library_adapter} "${cpp_typesupport_target}")
 
 # Causes the visibility macros to use dllexport rather than dllimport,
 # which is appropriate when building the dll but not consuming it.
@@ -80,7 +84,7 @@ install(
 )
 
 ## PYTHON MODULES
-ament_python_install_package(${PROJECT_NAME})
+ament_python_install_package(${PROJECT_NAME}_py)
 
 ## PYTHON EXECUTABLES
 install(PROGRAMS
@@ -102,11 +106,18 @@ if(BUILD_TESTING)
   find_package(ament_cmake_flake8 REQUIRED)
   find_package(ament_cmake_pep257 REQUIRED)
   find_package(ament_cmake_copyright REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_clang_format("--config" ${CMAKE_CURRENT_SOURCE_DIR}/.clang-format)
   ament_flake8("--config" ${CMAKE_CURRENT_SOURCE_DIR}/.flake8)
   ament_pep257()
   ament_copyright()
 
+  # Runs every test_*.py under test/
+  ament_add_pytest_test(pytest test
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 60
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  )
   add_subdirectory(test/adapter)
   pluginlib_export_plugin_description_file(vda5050_connector test/adapter/plugins_test.xml)
 endif()
