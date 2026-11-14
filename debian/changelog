@@ -1,0 +1,73 @@
+ros-humble-vda5050-connector (2.0.0-1jammy) jammy; urgency=high
+
+  * First release for ROS 2 Humble.
+    (#31 <https://github.com/inorbit-ai/ros_amr_interop/issues/31>,
+    #33 <https://github.com/inorbit-ai/ros_amr_interop/issues/33>)
+  * **Breaking:** order rejections now report ``errorType: "validationError"``
+    (VDA 5050 §6.6.4.1) instead of the non-standard ``"validationOrder"``.
+    Anything that matches on the old string needs updating.
+    (#83 <https://github.com/inorbit-ai/ros_amr_interop/issues/83>)
+  * **Breaking:** with VDA 5050 2.x, the ``state`` message now carries
+    ``information``, the 2.x field name, instead of the 1.x ``informations``.
+    The ROS 2 ``OrderState`` message keeps ``informations``; 1.x is unchanged.
+    (#43 <https://github.com/inorbit-ai/ros_amr_interop/issues/43>)
+  * New ``known_map_ids`` parameter: when set, orders whose nodes reference
+    any other ``mapId`` are rejected with ``validationError``.
+    (#83 <https://github.com/inorbit-ai/ros_amr_interop/issues/83>)
+  * New ``vda5050_protocol_version`` parameter for the MQTT bridge; topics use
+    its major version. (#53 <https://github.com/inorbit-ai/ros_amr_interop/issues/53>)
+  * New ``enable_nav_through_nodes`` mode: the controller sends the adapter one
+    ``NavigateThroughNodes`` goal for several nodes and extends it with
+    ``ExtendNavigation`` as the order grows, stopping at nodes with blocking actions.
+    (#75 <https://github.com/inorbit-ai/ros_amr_interop/issues/75>,
+    #80 <https://github.com/inorbit-ai/ros_amr_interop/issues/80>,
+    #86 <https://github.com/inorbit-ai/ros_amr_interop/issues/86>)
+  * Malformed orders are rejected with ``validationError`` instead of being
+    dropped, and a malformed MQTT message no longer stops the bridge.
+    (#84 <https://github.com/inorbit-ai/ros_amr_interop/issues/84>,
+    #94 <https://github.com/inorbit-ai/ros_amr_interop/issues/94>)
+  * Orders whose ``nodePosition`` has no ``theta`` are accepted (optional in
+    VDA 5050 2.x); the adapter gets NaN.
+    (#93 <https://github.com/inorbit-ai/ros_amr_interop/issues/93>)
+  * Serial numbers that aren't valid ROS 2 names (e.g. ``0001``) work; MQTT topics
+    keep them unchanged. (#92 <https://github.com/inorbit-ai/ros_amr_interop/issues/92>)
+  * ``interface_name`` can be configured, and the operating mode comes from the
+    adapter's state. (#60 <https://github.com/inorbit-ai/ros_amr_interop/issues/60>)
+  * ``errorReferences`` keys are camelCase.
+    (#72 <https://github.com/inorbit-ai/ros_amr_interop/issues/72>)
+  * Order handling fixes: stitching uses the last node of the base, action states
+    survive stitching, failed navigation goals and failed actions are reported,
+    a canceled order's errors are cleared, and instant actions don't count as an
+    active order.
+    (#42 <https://github.com/inorbit-ai/ros_amr_interop/issues/42>,
+    #45 <https://github.com/inorbit-ai/ros_amr_interop/issues/45>,
+    #60 <https://github.com/inorbit-ai/ros_amr_interop/issues/60>,
+    #64 <https://github.com/inorbit-ai/ros_amr_interop/issues/64>,
+    #65 <https://github.com/inorbit-ai/ros_amr_interop/issues/65>,
+    #68 <https://github.com/inorbit-ai/ros_amr_interop/issues/68>,
+    #69 <https://github.com/inorbit-ai/ros_amr_interop/issues/69>,
+    #76 <https://github.com/inorbit-ai/ros_amr_interop/issues/76>)
+  * Edge trajectory control points keep their orientation.
+    (#63 <https://github.com/inorbit-ai/ros_amr_interop/issues/63>)
+  * MQTT bridge: retries until the first broker connection succeeds, exits cleanly
+    on SIGINT, and logs connection errors without raising.
+    (#55 <https://github.com/inorbit-ai/ros_amr_interop/issues/55>,
+    #70 <https://github.com/inorbit-ai/ros_amr_interop/issues/70>,
+    #73 <https://github.com/inorbit-ai/ros_amr_interop/issues/73>,
+    #85 <https://github.com/inorbit-ai/ros_amr_interop/issues/85>)
+
+ -- "Leandro Pineda" <leandro@inorbit.ai>  Sat, 14 Nov 2026 00:00:00 -0000
+
+ros-humble-vda5050-connector (1.1.1-1jammy) jammy; urgency=high
+
+  * Fixed ROS buildfarm job (#29 <https://github.com/inorbit-ai/ros_amr_interop/issues/29>)
+
+ -- "Leandro Pineda" <leandro@inorbit.ai>  Fri, 28 Oct 2022 00:00:00 -0000
+
+ros-humble-vda5050-connector (1.1.0-1jammy) jammy; urgency=high
+
+  * Added VDA5050 connector package (#28 <https://github.com/inorbit-ai/ros_amr_interop/issues/28>)
+
+ -- "Leandro Pineda" <leandro@inorbit.ai>  Mon, 17 Oct 2022 00:00:00 -0000
+
+

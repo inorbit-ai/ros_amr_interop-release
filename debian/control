@@ -1,0 +1,12 @@
+Source: ros-humble-vda5050-connector
+Section: misc
+Priority: optional
+Maintainer: "Leandro Pineda" <leandro@inorbit.ai>
+Build-Depends: debhelper (>= 9.0.0), python3-paho-mqtt, python3-pytest <!nocheck>, python3-pytest-mock <!nocheck>, ros-humble-ament-cmake, ros-humble-ament-cmake-clang-format <!nocheck>, ros-humble-ament-cmake-copyright <!nocheck>, ros-humble-ament-cmake-cppcheck <!nocheck>, ros-humble-ament-cmake-cpplint <!nocheck>, ros-humble-ament-cmake-flake8 <!nocheck>, ros-humble-ament-cmake-gtest <!nocheck>, ros-humble-ament-cmake-pep257 <!nocheck>, ros-humble-ament-cmake-pytest <!nocheck>, ros-humble-ament-cmake-python, ros-humble-ament-cmake-ros, ros-humble-ament-cmake-uncrustify <!nocheck>, ros-humble-ament-copyright <!nocheck>, ros-humble-ament-flake8 <!nocheck>, ros-humble-ament-pep257 <!nocheck>, ros-humble-geometry-msgs, ros-humble-pluginlib, ros-humble-rclcpp, ros-humble-rclcpp-action, ros-humble-rclpy, ros-humble-rosidl-default-generators, ros-humble-rosidl-runtime-py, ros-humble-tf2, ros-humble-vda5050-msgs, ros-humble-ros-workspace, ros-humble-rosidl-typesupport-fastrtps-c, ros-humble-rosidl-typesupport-fastrtps-cpp
+Homepage: https://index.ros.org/p/vda5050_connector/#humble
+Standards-Version: 3.9.2
+
+Package: ros-humble-vda5050-connector
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3-paho-mqtt, ros-humble-geometry-msgs, ros-humble-pluginlib, ros-humble-rclcpp, ros-humble-rclcpp-action, ros-humble-rclpy, ros-humble-rosidl-runtime-py, ros-humble-tf2, ros-humble-vda5050-msgs, ros-humble-ros-workspace
+Description: ROS2 to VDA5050 / VDA5050 to ROS2 connector
