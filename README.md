@@ -1,65 +1,85 @@
-# ROS AMR interoperability packages
+# VDA5050 Connector
 
-This repository hosts a collection of ROS packages to ease
-the integration of ROS based robots with different interoperability
-standards, with a focus on AMRs (Autonomous Mobile Robots).
+A ROS2 package which implements a connector for [VDA5050](https://github.com/VDA5050/VDA5050/blob/main/VDA5050_EN.md), a standardized interface for communication between fleets of AGVs/AMRs and a central Master Control.
 
-## Packages
+## Overview
 
-The following packages are included in this repository:
+The package names itself *Connector*, since it can be thought as a bridge between a VDA5050 Master Control (MC) and the ROS2 robot API.
 
-### Full Control Fleet Adapter for RMF and InOrbit
+![VDA5050 General diagram](./docs/source/_static/vda5050_diagram.png)
 
-The [rmf_inorbit_fleet_adapter](https://github.com/inorbit-ai/ros_amr_interop/tree/humble-devel/rmf_inorbit_fleet_adapter) package contains a Full Control [Open-RMF](https://github.com/open-rmf/rmf#robotics-middleware-framework-rmf) Fleet Adapter that allows RMF to control a fleet of autonomous robots through the InOrbit API.
-For demonstrations of this adapter or a template to configure your own fleet, visit the the InOrbit RMF [Fleet Adapter Examples](https://github.com/inorbit-ai/rmf_inorbit_examples) repository.
+The connector is composed of three main parts (ROS2 nodes):
 
-### VDA5050 Connector for ROS2
+- **MQTT_bridge**: Communicates the VDA5050 <> ROS2 topics, translating [VDA5050 messages](https://github.com/VDA5050/VDA5050/tree/main/json_schemas) into ROS2 [vda5050_msgs](https://github.com/ipa320/vda5050_msgs/tree/ros2-vda5050-v2) and vice versa.
+- **Controller**: Processes the VDA5050 robot execution as per standard specification. It validates, executes, or rejects orders and instant actions, as well as assembles feedback information to the MC.
+- **Adapter**: Provides the interaction between the controller and the Robot API. The adapter is the one who knows how to send a navigation goal request, execute an action or retrieve specific information robot such as battery or odometry.
 
-The [vda5050_connector](https://github.com/inorbit-ai/ros_amr_interop/tree/galactic-devel/vda5050_connector#readme)
-package provides a set of ROS2 nodes for connecting a ROS2-based robot to a [VDA5050 Master Control](https://github.com/VDA5050/VDA5050/blob/main/VDA5050_EN.md#-5-process-and-content-of-communication).
+![Connector diagram](./docs/source/_static/connector_diagram.png)
 
-If you want to develop a VDA5050 adapter for your robots, please check out our [VDA5050 Adapter Examples repository](https://github.com/inorbit-ai/vda5050_adapter_examples) to get started.
+The way the adapter knows how to execute the different operations requested by the controller is using ROS2 plugins (components). The current project provides three plugin template interfaces, called handlers, which cover the main communication paths:
 
-### Mass Robotics AMR Interop Sender for ROS2
+- **State handler**: Designed for updating robot specific information on the VDA5050 [order_state](https://github.com/ipa320/vda5050_msgs/blob/ros2-vda5050-v2/vda5050_msgs/msg/OrderState.msg).
+- **NavToNode handler**: Designed for sending goals to the robot navigation stack one node at a time.
+- **NavThroughNodes handler**: Designed for sending multi-node navigation goals, with optional in-flight goal extension via the `ExtendNavigation` service (VDA5050 order stitching).
+- **VDA Action handler**: Designed for handling requests to execute specific actions (localize, lift a load, etc).
 
-The [massrobotics_amr_sender_py](https://github.com/inorbit-ai/ros_amr_interop/tree/foxy-devel/massrobotics_amr_sender_py#readme)
-package provides a ROS2 node written in Python that takes input from a
-ROS2 system and publishes it to a [Mass Robotics Interop compliant
-Receiver](https://github.com/MassRobotics-AMR/AMR_Interop_Standard/tree/main/MassRobotics-AMR-Receiver).
+![Connector diagram](./docs/source/_static/connector_package.png)
 
-Mapping of different data elements from the ROS2 system into Mass
-Robotics Interop messages can be customized through a YAML configuration
-file.
+For a full guide on implementing `NavThroughNodes` and the `ExtendNavigation` in-flight extension feature, see [docs/source/nav_through_nodes.md](./docs/source/nav_through_nodes.md).
 
-## Related Initiatives
+## How to use it
 
-The topic of AMR interoperability is in a fluid state of evolution. For this reason, it is worth it to keep track of other standards, initiatives, libraries and efforts related to this topic.
+The package is also a library package; it exports the headers and binary files to create and assemble a specific adapter. To create your own adapter package, add this package as a dependency and define the different plugin handlers for your robot. You can also customize the adapter core functionalities if desired.
 
-The following is an incomplete and growing list of such related topics:
+To do this this, you can check the [vda5050_examples](https://github.com/inorbit-ai/vda5050_adapter_examples) repository, where you will find examples of adapter packages, for python and C++, as well as docker scripts to quickly start testing them.
 
-* [Isaac Mission Dispatch](https://github.com/nvidia-isaac/isaac_mission_dispatch) is NVIDIA's open source cloud micro-services enabling fleet management software to submit missions to multiple robots and monitor the robot and mission states. The communication between Mission Dispatch and robots is designed per VDA5050 protocol and uses MQTT.
-* [Open-RMF](https://osrf.github.io/ros2multirobotbook/) (formerly RMF Core) is an open source framework based on ROS 2 to enable the interoperability of heterogeneous fleets of any type of robotics systems.
-* [Mass Robotics AMR Interoperability Standard](https://github.com/MassRobotics-AMR/AMR_Interop_Standard) aims to help organizations deploy AMRs from multiple vendors and have them coexist effectively.
-* [VDA 5050](https://github.com/VDA5050/VDA5050) AGV Communications Interface describes an interface for communication between driverless transport vehicles (AGV) and a master control system over MQTT using standardized JSON messages.
-* [OPC Unified Architecture](https://opcfoundation.org/about/opc-technologies/opc-ua/) (OPC UA) is a machine to machine communication protocol for industrial automation developed by the OPC Foundation
-  * [ros_opcua_communication](http://wiki.ros.org/ros_opcua_communication) ROS bindings for different open-source OPC-UA implementations
+### Nodes without `theta`
 
-We expect to keep curating the set of relevant topics with the contribution of the community.
+`theta` is optional in a node's `nodePosition`: without it, the vehicle may plan its own heading. The connector passes a missing `theta` to the adapter as NaN, so NavToNode and NavThroughNodes handlers may receive `node_position.theta` as NaN; check it with `std::isnan` (C++) or `math.isnan` (Python). `get_pose_from_node` falls back to yaw 0 for such a node rather than returning a NaN quaternion. An order with `"theta": null` isn't schema-valid and is ignored.
 
-## Development
+### Dependencies
 
-Install [pre-commit](https://pre-commit.com/) in your computer and then set it up by running `pre-commit install` at the root of the cloned project.
+- ROS2 - ament_cmake: The package is based on ROS2, and uses `ament_cmake`.
+- [vda5050_msgs](https://github.com/ipa320/vda5050_msgs/tree/ros2-vda5050-v2): ROS2 messages for the VDA5050 standard (version 2.0).
+- [pluginlib](http://wiki.ros.org/pluginlib): The adapter uses plugins to load the different handlers.
+- [python3-paho-mqtt](https://pypi.org/project/paho-mqtt/): The `mqtt_bridge` uses the `paho-mqtt` library as the mqtt client.
 
-## Build Status
+### Compilation
 
-| Service | Foxy  | Galactic |
-| :---: | :---: | :---: |
-| ROS Build Farm | [![Build Status](http://build.ros2.org/job/Fdev__ros_amr_interop__ubuntu_focal_amd64/badge/icon)](http://build.ros2.org/job/Fdev__ros_amr_interop__ubuntu_focal_amd64/) |  [![Build Status](http://build.ros2.org/job/Gdev__ros_amr_interop__ubuntu_focal_amd64/badge/icon)](http://build.ros2.org/job/Gdev__ros_amr_interop__ubuntu_focal_amd64/) |
+Start a docker container with the required packages mounted on `dev_ws`:
 
-| Package | Foxy Source | Foxy Debian | Galactic Source | Galactic Debian |
-| :---: | :---: | :---: | :---: | :---: |
-| rmf_inorbit_fleet_adapter | N/A | N/A | N/A | N/A |
-| vda5050_connector | N/A | N/A | [![Build Status](http://build.ros2.org/job/Gsrc_uF__vda5050_connector__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Gsrc_uF__vda5050_connector__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Gbin_uF64__vda5050_connector__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Gbin_uF64__vda5050_connector__ubuntu_focal_amd64__binary/) |
-| vda5050_msgs | N/A | N/A | [![Build Status](http://build.ros2.org/job/Gsrc_uF__vda5050_msgs__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Gsrc_uF__vda5050_msgs__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Gbin_uF64__vda5050_msgs__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Gbin_uF64__vda5050_msgs__ubuntu_focal_amd64__binary/) |
-| vda5050_serializer | N/A | N/A | [![Build Status](http://build.ros2.org/job/Gsrc_uF__vda5050_serializer__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Gsrc_uF__vda5050_serializer__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Gbin_uF64__vda5050_serializer__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Gbin_uF64__vda5050_serializer__ubuntu_focal_amd64__binary/) |
-| massrobotics_amr_sender | [![Build Status](http://build.ros2.org/job/Fsrc_uF__massrobotics_amr_sender__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__massrobotics_amr_sender__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__massrobotics_amr_sender__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__massrobotics_amr_sender__ubuntu_focal_amd64__binary/) | [![Build Status](http://build.ros2.org/job/Gsrc_uF__massrobotics_amr_sender__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Gsrc_uF__massrobotics_amr_sender__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Gbin_uF64__massrobotics_amr_sender__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Gbin_uF64__massrobotics_amr_sender__ubuntu_focal_amd64__binary/) |
+```bash
+# Go to the repository root folder and execute
+docker run -ti --rm \
+    --workdir /dev_ws/ \
+    -v ./vda5050_msgs:/dev_ws/src/vda5050_msgs \
+    -v ./vda5050_serializer:/dev_ws/src/vda5050_serializer \
+    -v ./vda5050_connector:/dev_ws/src/vda5050_connector \
+    osrf/ros:humble-desktop-full
+```
+
+Now build the package:
+
+```bash
+apt update && apt install ros-humble-ament* -y
+cd /dev_ws/
+colcon build --symlink-install
+```
+
+### Testing
+
+The package provides several lint test (`ament_pep257` and `ament_flake8` for Python, `ament_clang_format` for C++ and `ament_copyright`), as well as specific unit tests to check the correct functionality of the different modules. To run the tests, execute:
+
+```sh
+cd /dev_ws/
+rosdep install --from-paths src -y --ignore-src
+colcon test --packages-select vda5050_connector && colcon test-result --verbose
+```
+
+## Contributing
+
+Please see the [CONTRIBUTING](CONTRIBUTING.md) document.
+
+## License
+
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
